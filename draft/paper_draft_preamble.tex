@@ -1,0 +1,52 @@
+
+%\usepackage[utf8x]{inputenc}
+\usepackage{amsmath}
+\usepackage{amsthm}
+\usepackage{graphicx}
+\usepackage[colorinlistoftodos]{todonotes}
+
+\let\B\relax 
+
+\let\T\relax
+
+\usepackage{gb4e}
+\exewidth{(\thexnumi)} %ex number no indent setting
+\let\eachwordone=\textit %first line italic
+\noautomath
+
+\usepackage[linguistics,edges]{forest} 
+\forestset{
+ned/.style={%
+    for tree={calign=fixed edge angles},
+    delay={%
+      where content={}{%
+        shape=coordinate,
+        for nodewalk={%
+          Nodewalk={%
+            on invalid=fake,
+          }{%
+            parent,
+          }{%
+            for children={anchor=north},
+          }
+        }{},
+      }{},
+    },
+},
+fned/.style={
+        delay={where content={}{shape=coordinate,
+              for siblings={anchor=north}}{}},
+		for tree={s sep=4mm}},
+}
+
+
+%\usepackage{leipzig}
+%\makeglossaries
+
+
+\usepackage{hyperref}
+\hypersetup{colorlinks = true, linkcolor = blue, citecolor = blue, urlcolor = blue}
+\usepackage{multicol}
+
+\usepackage{listings}
+\lstloadlanguages{R}

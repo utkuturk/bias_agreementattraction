@@ -31,6 +31,8 @@ natturk <- df_forms_grammatialBias %>% dplyr::filter(Sentence == "natturk") %>%
   dplyr::select(subject, natturk = Question)
 natturk$natturk <- ifelse(natturk$natturk == "male", "nat_turk", "nat_non_turk")
 forms_grammatialBias <- dplyr::left_join(age, natturk, by = "subject")
+form_out <- "workspace/grammaticalBias_form.rds"
+saveRDS(forms_grammatialBias, file = form_out)
 
 #extract stim and responses
 stopifnot( nrow(data_grammaticalBias) %% 2 == 0 )
@@ -51,9 +53,13 @@ data_grammaticalBias_practice %>% subset(Response == "NULL")
 data_grammaticalBias_practice$ResponseCorrect[data_grammaticalBias_practice$ResponseCorrect == "NULL"] <- 0
 data_grammaticalBias_practice$ResponseCorrect %<>%  as.integer()
 bad_subjects_by_practice <- data_grammaticalBias_practice %>% group_by(subject) %>% 
-  summarize(p_yes = mean(ResponseCorrect), meanRT = mean(RT)) %>% subset(p_yes <=0.6) %>% .$subject
-rows_resp_grammaticalBias_nobadpractice <- rows_resp_grammaticalBias %>% subset(!subject %in% bad_subjects_by_practice)
-forms_grammatialBias_nobadpractice <- forms_grammatialBias %>% subset(!subject %in% bad_subjects_by_practice)
+  summarize(p_yes = mean(ResponseCorrect), meanRT = mean(RT)) %>% subset(p_yes <=0.6)
+bad_subjects_by_practice_list <- bad_subjects_by_practice %>% .$subject
+badsubj_out <- "workspace/grammaticalBias_badsubj.rds"
+saveRDS(bad_subjects_by_practice, file = badsubj_out)
+
+rows_resp_grammaticalBias_nobadpractice <- rows_resp_grammaticalBias %>% subset(!subject %in% bad_subjects_by_practice_list)
+forms_grammatialBias_nobadpractice <- forms_grammatialBias %>% subset(!subject %in% bad_subjects_by_practice_list)
 
 #prepare data for analysis.
 data_grammaticalBias_nobadpractice <- rows_resp_grammaticalBias_nobadpractice %>% 
@@ -86,6 +92,7 @@ conditions_info <- data.frame(
   grammatical =   c("ungram",      "gram",        "ungram",      "gram",        "ungram",     "gram"),
   verb_num =      c("pl",          "sg",          "pl",          "sg",          "sg",         "pl"),
   attractor_num = c("pl",          "pl",          "sg",          "sg",          NA,           NA),
+  match =         c("mismatch",    "mismatch",    "match",       "match",       NA,           NA),
   stringsAsFactors = FALSE
   )
 

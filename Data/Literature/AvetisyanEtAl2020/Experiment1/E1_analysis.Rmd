@@ -1,0 +1,681 @@
+---
+title: "Experiment 1 (forced-choice task)"
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+output: pdf_document
+
+---
+
+\large{R code to reproduce the analysis of Experiment 1 reported in the manuscript \emph{"Does case marking affect agreement attraction in comprehension?"}.}
+
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(fig.path='figures/fig-',
+               fig.align='center',
+               fig.show='hold',warning=FALSE,message=FALSE, echo = FALSE)
+
+```
+
+
+```{r load_data}
+# Load packages
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(brms)
+library(MASS)
+library(ggplot2)
+library(binom)
+library(boot) # for backtransformations
+library(ggpubr)
+library(brmstools)
+library(rstanarm)
+library(bayesplot)
+library(gridExtra) # for assembling multiple plots on one page
+
+# Define functions
+# Function to calculate standard error.
+se <- function(x) {
+    return(sqrt(var(x,na.rm=TRUE)/length(na.omit(x))))
+}
+
+
+# Function to calculate binomial standard error.
+se.bin <- function(x){
+  n.success = sum(na.omit(x)) #x is coded as 1 (success) or 0 (failure), so number of successes is the sum of x = 1 
+  n         = length(na.omit(x))
+  p         = n.success / n
+  return(sqrt(p*(1-p)/n))
+}
+
+# Load data
+data <- read.csv("E1_data.csv", encoding="UTF-8", header=T)
+data$Participant<-as.integer(factor(data$Participant,
+                                    levels=unique((data$Participant))))
+```
+
+# Participants 
+***Participant exclusion.*** In total 189 participants were recruited, but data from 14 participants were excluded, resulting in 175 participants whose data were included in the analysis.
+
+* Five participants missed the response deadline (i.e., timeout in all trials)
+* Four participants reported bad vision
+* Three participants reported a speech impairment
+* One participant did not have Armenian as his/her L1
+* One participant had filler accuracy below 70%
+
+```{r}
+# Exclude participants
+data<-subset(data, Vision!="bad" & Impairment!="yes" & L1!="russian")
+data<-subset(data, !(Participant %in% c(66, 68, 121, 132, 189,137))) 
+```
+
+***Demographic data.*** Below is the summary of demographic data after 14 participants were excluded. "Hand" stands for "Handedness", "Impairment" stands for "Language Impairment". As to the "Keypress", 89 participants pressed the "F" key to choose a singular verb form and the "J" key to choose a plural verb form, whereas 86 participants used the reverse key configuration.
+```{r}
+# Summarize demographic data
+demographic <- data[!duplicated(data$Participant),] # leave one row per participant
+demographicRel <- demographic[c(8:11,16:18)] # select columns with relevant info
+
+options(knitr.kable.NA = '') # exclude NAs in the table
+kable(summary(demographicRel), 
+  booktabs=T, 
+  caption = "Summary of participants' demographic characteristics.")  %>%
+  kable_styling(latex_options = c("basic", "scale_down", "hold_position")) %>% 
+  row_spec(0,bold=TRUE) 
+
+```
+
+
+```{r subset_data}
+## Subset data and convert Item and Participant to factor
+data$Participant<-factor(data$Participant)
+data$Item<-factor(as.character(data$Item), exclude="NULL")
+
+filler <- subset(data, grepl("^f", data$Type)) # subset filler items
+target <- subset(data, grepl("a|b|c|d", data$Type)) # subset experimental items
+target$Type<-factor(target$Type,levels=letters[1:4]) 
+```
+
+ 
+```{r data_summary, eval=FALSE}
+summary(data[,-5]) # exclude the column w/Armenian characters to prevent execution error
+
+```
+
+# Contrast coding 
+***Main effects and interaction***
+```{r echo=TRUE}
+# Contrasts to evaluate the main effects of case, attractor number ('num'),
+# and their interaction
+##         a   b   c   d
+#case     -1  -1   1   1   # case match is -1, mismatch is 1
+#num      -1   1  -1   1   # singular attractor is -1, plural is 1
+target$case<-ifelse(target$Type%in%c("a","b"),-1,1)
+target$num<-ifelse(target$Type%in%c("a","c"),-1,1)
+target$casexnum<-target$case*target$num
+```
+
+\newpage
+
+***Nested comparisons***
+```{r echo=TRUE}
+# Contrasts to evaluate the attractor number effects separately in case match 
+# (nominative attractor) and mismatch (accusative attractor) conditions 
+##          a   b   c   d
+#case      -1  -1   1   1   # case match is -1, mismatch is 1
+#attr_nom  -1   1   0   0   # singular attractor is -1, plural is 1  
+#attr_acc   0   0  -1   1
+target$attr_nom<-ifelse(target$Type=="a",-1,ifelse(target$Type=="b",1,0))
+target$attr_acc<-ifelse(target$Type=="c",-1,ifelse(target$Type=="d",1,0))
+```
+
+# Filler accuracy 
+* Missed responses in the filler items constitute 1%.
+```{r}
+sum(is.na(filler$Accuracy))[1]/dim(filler)[1]
+```
+
+\vspace{0.5cm}
+
+* Overall accuracy (%) for the filler items
+```{r}
+filler %>% dplyr::summarize(
+  fillerAccuracy = round(100*mean(Accuracy, na.rm = TRUE), digits=1),
+  fillerSE = round(100*se.bin(Accuracy), digits=1))
+```
+
+\vspace{0.5cm}
+
+```{r fig.height=4, fig.width=7}
+# Compute mean accuracy for each participant for the filler items
+filler_acc_bySubj <- filler %>% 
+  group_by(Participant) %>% 
+  summarize(Filler_accuracy = round(100 *mean(Accuracy, na.rm = TRUE), digits = 0))
+
+# range(filler_acc_bySubj$Filler_accuracy) 
+
+filler_acc_bySubj$Participant<-as.numeric(as.character
+                                          (filler_acc_bySubj$Participant))
+
+# Plot mean accuracy for each participant for the filler items 
+ggplot(
+  filler_acc_bySubj,
+  aes(x = Participant,
+      y = Filler_accuracy )) +
+  geom_point() +
+  scale_x_continuous(name="Participants", breaks=seq(1,189,8)) +
+  ylab("Accuracy (%)") -> bySubj_fillerPlot 
+
+# Add titles
+bySubj_fillerPlot + labs(
+  title = "Mean accuracy per participant for the filler items",
+  subtitle = "Accuracy ranges from 74% to 100%")
+
+```
+
+\newpage
+
+# Target accuracy 
+* Each condition has 2100 observations of which missed responses constitute:
+    + a. case match, singular attractor    - 20 NAs (0.95%) 
+    + b. case match, plural attractor      - 33 NAs (1.57%)
+    + c. case mismatch, singular attractor - 14 NAs (0.67%)
+    + d. case mismatch, plural attractor   - 27 NAs (1.29%)
+    
+```{r include=FALSE}
+as.data.frame(allObservations <- target %>% 
+                group_by(Type) %>% 
+                summarize(length = length (Type)))
+
+as.data.frame(withoutNA<-target %>% 
+                filter(Accuracy != "NA") %>% 
+                group_by(Type) %>% 
+                summarize(length = length (Type)))
+
+(allObservations-withoutNA)/allObservations # percentage of NAs in each condition
+
+```
+
+\vspace{0.5cm}
+
+* The NAs (missed responses) and the response times (RTs) below 200ms are excluded, resulting in the removal of 1.49% of the raw data.
+```{r}
+trgTrm<-subset(target, RT!="NA" & Accuracy!='NA' & RT>200)
+(dim(target)[1]-dim(trgTrm)[1])/dim(target)[1]
+```
+
+\vspace{0.5cm} 
+
+* Overall accuracy (%) for the experimental items
+```{r}
+trgTrm %>% dplyr::summarize(
+  trgAccuracy = round(100*mean(Accuracy, na.rm = TRUE), digits=1),
+  trgSE = round(100*se.bin(Accuracy), digits=1))
+```
+
+\vspace{0.5cm}
+
+```{r}
+# Compute mean accuracy for each condition for the experimental items
+target_acc_byCond <-trgTrm %>% group_by(Type) %>% summarize(
+  trgAccuracy = round(100 *mean(Accuracy), digits = 1),
+  trgSE =  round(100*se.bin(Accuracy), digits=1))
+
+colnames(target_acc_byCond) <- c("Condition", "Accuracy [%]", "SE")
+rownames(target_acc_byCond) <- c("case match, singular attractor",
+                                 "case match, plural attractor",
+                                 "case mismatch, singular attractor",
+                                 "case mismatch, plural attractor")
+
+# Present mean accuracy for each condition in a table
+target_acc_byCond %>%
+  kable(align="c", booktabs = T, 
+        caption = "Mean accuracy per condition for the experimental items") %>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) %>%
+  column_spec(1, width = "20em")
+
+```
+
+```{r fig.height=4, fig.width=7}
+# Compute mean accuracy for each participant for the experimental items
+target_acc_bySubj <- trgTrm %>% group_by(Participant) %>% summarize(target_accuracy = round(100 *mean(Accuracy), digits = 0))
+
+target_acc_bySubj$Participant <- as.numeric(as.character
+                                            (target_acc_bySubj$Participant))
+
+# Plot mean accuracy for each participant for the experimental items
+bySubj_targetPlot <- ggplot(target_acc_bySubj, 
+       aes(x = Participant, y = target_accuracy )) + 
+  geom_point() +
+  scale_x_continuous(name="Participants", breaks=seq(1,189,8)) +
+  ylab("Accuracy (%)") 
+
+# Add titles
+bySubj_targetPlot + labs(
+  title = "Mean accuracy per participant for the experimental items",
+  subtitle = "Accuracy ranges from 47% to 100%")
+
+```
+
+# Response time data 
+```{r}
+rtCorrect<-subset(trgTrm, Accuracy==1) # include only correctly-answered trials
+```
+
+```{r}
+# Create RT boxplots
+op<-par(mfrow=c(1,2) ,pty="m")
+
+boxplot(RT~Type, rtCorrect, col=c("grey","black"), 
+        border="brown", notch=TRUE, 
+        main="Raw response times")
+
+boxplot(log(RT)~Type, rtCorrect, col=c("grey","black"), 
+        border="brown", notch=TRUE, 
+        main="Logged response times")
+```
+
+```{r}
+# Compute mean RT for each conditions in trials on which a correct answer was provided  
+rt_byCond<-rtCorrect %>% 
+  group_by(Type) %>% 
+  summarize(rtMean = round(mean(RT), digits = 0),
+  rtSE = round(se(RT), digits = 0))
+
+colnames(rt_byCond) <- c("Condition", "Mean RT [ms]", "SE")
+rownames(rt_byCond) <- c("case match, singular attractor",
+                                 "case match, plural attractor",
+                                 "case mismatch, singular attractor",
+                                 "case mismatch, plural attractor")
+
+# Present mean RT for each condition in a table
+ rt_byCond %>%
+   kable(align="c", booktabs = T,
+         caption = "Mean response time per condition. We have only considered the trials on which correct answers were provided.") %>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) %>%
+  column_spec(1, width = "20em")
+```
+
+\newpage
+
+# Priors 
+```{r echo=TRUE}
+# Priors for accuracy analysis involving main effects and interaction
+priors_acc_two_way <- c(set_prior("normal(0,10)", class="Intercept"),
+                 set_prior("normal(0,1)", class="b", coef="case"),
+                 set_prior("normal(0,1)", class="b", coef="num"),
+                 set_prior("normal(0,1)", class="b", coef="casexnum"),
+                 set_prior("normal(0,1)", class="sd"),
+                 set_prior("lkj(2)", class="cor"))
+
+# Priors for response time analysis involving main effects and interaction
+priors_rt_two_way <- c(set_prior("normal(0,10)", class="Intercept"),
+                 set_prior("normal(0,1)", class="b", coef="case"),
+                 set_prior("normal(0,1)", class="b", coef="num"),
+                 set_prior("normal(0,1)", class="b", coef="casexnum"),
+                 set_prior("normal(0,1)", class="sd"),
+                 set_prior("normal(0,1)", class="sigma"),
+                 set_prior("lkj(2)", class="cor"))
+```
+
+```{r echo=TRUE}
+# Priors for accuracy analysis involving nested comparisons
+priors_acc_nested<- c(set_prior("normal(0,10)", class="Intercept"),
+           set_prior("normal(0,1)", class="b", coef="case"),
+           set_prior("normal(0,1)", class="b", coef="attr_nom"),
+           set_prior("normal(0,1)", class="b", coef="attr_acc"),
+           set_prior("normal(0,1)", class="sd"),
+           set_prior("lkj(2)", class="cor"))
+
+# Priors for response time analysis involving nested comparisons
+priors_rt_nested<- c(set_prior("normal(0,10)", class="Intercept"),
+           set_prior("normal(0,1)", class="b", coef="case"),
+           set_prior("normal(0,1)", class="b", coef="attr_nom"),
+           set_prior("normal(0,1)", class="b", coef="attr_acc"),
+           set_prior("normal(0,1)", class="sd"),
+           set_prior("normal(0,1)", class="sigma"),
+           set_prior("lkj(2)", class="cor"))
+```
+
+```{r include=FALSE, cache=TRUE, cache.comments=FALSE}
+# Run model for accuracy data to evaluate main effects of case, attractor number, and their interaction
+macc_int <- brm(formula = Accuracy ~ case+num+casexnum+
+                 (1+case+num+casexnum|Participant) + 
+                 (1+case+num+casexnum|Item),
+                 data = trgTrm, family = bernoulli(), prior = priors_acc_two_way,
+                 iter = 2000, chains = 4, control = list(adapt_delta = 0.99))
+
+```
+
+```{r include=FALSE, cache=TRUE, cache.comments=FALSE}
+# Run model for accuracy data, with nested comparisons to evaluate attractor number effect for the case match and mismatch conditions separately
+macc_nested <- brm(formula = Accuracy ~ case+attr_nom+attr_acc + (1+case+attr_nom+attr_acc|Participant) + (1+case+attr_nom+attr_acc|Item),
+                 data = trgTrm, family = bernoulli(), prior = priors_acc_nested,
+                 iter = 2000, chains = 4, control = list(adapt_delta = 0.99))
+```
+
+```{r include=FALSE, cache=TRUE, cache.comments=FALSE}
+# Run model for response time data to evaluate main effects of case, attractor number, and their interaction
+mrt_int <- brm(formula = log(RT) ~ case+num+casexnum+
+                 (1+case+num+casexnum|Participant) + 
+                 (1+case+num+casexnum|Item),
+                 data = rtCorrect, family = gaussian(), prior = priors_rt_two_way,
+                 iter = 2000, chains = 4, control = list(adapt_delta = 0.99))
+
+```
+
+```{r include=FALSE, cache=TRUE, cache.comments=FALSE}
+# Run model for response time data, with nested comparisons to evaluate attractor number effect for the case match and mismatch conditions separately
+mrt_nested <- brm(formula = log(RT) ~ case+attr_nom+attr_acc+ (1+case+attr_nom+attr_acc|Participant) + (1+case+attr_nom+attr_acc|Item),
+                 data = rtCorrect, family = gaussian(), prior = priors_rt_nested,
+                 iter = 2000, chains = 4, control = list(adapt_delta = 0.99))
+
+```
+
+\newpage
+
+# Accuracy analysis results 
+In the tables below, each effect is described in terms of its posterior mean on log odds scale and the lower and upper bound of 95% credible interval.
+```{r}
+# summarize model output in a table
+kable(fixef(macc_int), booktabs=T, caption = "Model output for accuracy analysis examining main effects of case, attractor number ('num), and their interaction.")%>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) 
+```
+
+***Model estimates back-transformed to percentages***
+```{r}
+
+posterior_samples(macc_int, pars= c("b") ) %>%
+  mutate(pred = inv.logit(b_Intercept + b_case) - inv.logit(b_Intercept - 
+                                                       b_case))  %>%
+  summarize(Estimate_case = round(100*mean(pred),1) %>% paste("%"),
+            `95% CrI` = paste(round(100*quantile(pred,c(0.025,.975)),1), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+ #----------------------------------------------------#
+
+posterior_samples(macc_int, pars= c("b") ) %>%
+  mutate(pred = inv.logit(b_Intercept + b_num) - inv.logit(b_Intercept - 
+                                                       b_num))  %>%
+  summarize(Estimate_num = round(100*mean(pred),1) %>% paste("%"),
+            `95% CrI` = paste(round(100*quantile(pred,c(0.025,.975)),1), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+ #----------------------------------------------------#
+
+posterior_samples(macc_int, pars= c("b") ) %>%
+  mutate(pred = inv.logit(b_Intercept + b_casexnum) - inv.logit(b_Intercept - 
+                                                       b_casexnum))  %>%
+  summarize(Estimate_casexnum = round(100*mean(pred),1) %>% paste("%"),
+            `95% CrI` = paste(round(100*quantile(pred,c(0.025,.975)),1), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+```
+
+```{r}
+# summarize model output in a table
+kable(fixef(macc_nested), booktabs=T, caption = "Model output for accuracy analysis examining attractor number effect (i.e., attraction effect) for the case match (nominative attractor; attr\\_nom) and case mismatch (accusative attractor; attr\\_acc) conditions separately.")%>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) 
+```
+
+***Model estimates back-transformed to percentages***
+```{r}
+
+posterior_samples(macc_nested, pars= c("b") ) %>%
+  mutate(pred = inv.logit(b_Intercept + b_attr_nom) - inv.logit(b_Intercept - 
+                                                       b_attr_nom))  %>%
+  summarize(Estimate_attraction_caseMatch = round(100*mean(pred),1) %>% paste("%"),
+            `95% CrI` = paste(round(100*quantile(pred,c(0.025,.975)),1), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+ #----------------------------------------------------#
+
+posterior_samples(macc_nested, pars= c("b") ) %>%
+  mutate(pred = inv.logit(b_Intercept + b_attr_acc) - inv.logit(b_Intercept - 
+                                                       b_attr_acc))  %>%
+  summarize(Estimate_attraction_caseMismatch = round(100*mean(pred),1) %>% paste("%"),
+            `95% CrI` = paste(round(100*quantile(pred,c(0.025,.975)),1), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+```
+
+\newpage
+
+# Response time analysis results 
+Only response times for correctly-answered trials have been included in the analysis. In the tables below, each effect is described in terms of its posterior mean on log scale and the lower and upper bound of 95% credible interval.
+```{r}
+# summarize model output in a table
+kable(fixef(mrt_int), 
+      booktabs=T, 
+      caption = "Model output for response time analysis examining main effects of case, attractor number ('num'), and their interaction.") %>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) 
+```
+
+***Model estimates back-transformed to milliseconds***
+```{r}
+posterior_samples(mrt_int, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_case) - exp(b_Intercept - 
+                                                       b_case))  %>%
+  summarize(Estimate_case = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+ 
+#----------------------------------------------------#
+
+posterior_samples(mrt_int, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_num) - exp(b_Intercept - 
+                                                       b_num))  %>%
+  summarize(Estimate_num = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+#----------------------------------------------------#
+
+posterior_samples(mrt_int, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_casexnum) - exp(b_Intercept - 
+                                                       b_casexnum))  %>%
+  summarize(Estimate_casexnum = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+```
+
+```{r}
+# summarize model output in a table
+kable(fixef(mrt_nested), booktabs=T, caption = "Model output for response time analysis examining attractor number effect (i.e., attraction effect) for the case match (nominative attractor; attr\\_nom) and case mismatch (accusative attractor; attr\\_acc) conditions separately.")%>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) 
+```
+
+***Model estimates back-transformed to milliseconds***
+```{r}
+posterior_samples(mrt_nested, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_attr_nom) - exp(b_Intercept - 
+                                                       b_attr_nom))  %>%
+  summarize(Estimate_attraction_caseMatch = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+#----------------------------------------------------#
+
+posterior_samples(mrt_nested, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_attr_acc) - exp(b_Intercept - 
+                                                       b_attr_acc))  %>%
+  summarize(Estimate_attraction_caseMismatch = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+```
+
+\newpage
+\blandscape
+
+# Plots 
+```{r}
+# Plot mean accuracy in each of the four conditions
+trgTrm %>%
+  group_by(Type) %>%
+  summarize(
+    mean.acc = 100*mean(Accuracy),
+    se.lower = mean.acc - 100*(se.bin(Accuracy)),
+    se.upper = mean.acc + 100*(se.bin(Accuracy))) -> df_Acc
+
+df_Acc$Case<-ifelse(df_Acc$Type    %in% c("a","b"), "case match", "case mismatch")
+df_Acc$Number <-ifelse(df_Acc$Type %in% c("a","c"), "singular", "plural")
+
+## Change the factor level order
+df_Acc$Case <- factor(df_Acc$Case, levels=c("case match", "case mismatch")) 
+df_Acc$Number <- factor(df_Acc$Number, levels = c("singular","plural"))
+
+plotAcc <- ggplot(
+  data =df_Acc,
+  aes(x=Case, y=mean.acc, group=Number, color=Number)) +
+  geom_errorbar(aes(ymin=se.lower, ymax=se.upper),
+                width=0.1,size=.4, 
+                show.legend = FALSE) + 
+  geom_line(aes(linetype=Number),size=.4) +
+  geom_point(size=2, show.legend = FALSE) +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +
+  scale_color_manual(values = alpha(c("grey30", "grey30")))+
+  theme_bw(base_size = 12, base_family = "sans") +
+  labs(y = "[%]",
+       title = "Accuracy") +
+  labs(group="Attractor number",
+       linetype="Attractor number", 
+       color="Attractor number") +
+  theme(plot.title = element_text(face="bold"),
+        axis.title.x=element_blank(),
+        legend.position="bottom",
+        legend.key.width = unit(0.8,"cm")) 
+
+```
+
+```{r}
+# Plot mean response latency in each of the four conditions
+rtCorrect %>%
+  group_by(Type) %>%
+  dplyr::summarize(
+    mean.rt = mean(RT),
+    se.lower = mean.rt - se(RT),
+    se.upper = mean.rt + se(RT),
+    ci.lower = mean.rt - 2*se(RT),
+    ci.upper = mean.rt + 2*se(RT)) -> df_RT
+
+df_RT$Case<-ifelse(df_RT$Type    %in% c("a","b"), "case match", "case mismatch")
+df_RT$Number <-ifelse(df_RT$Type %in% c("a","c"), "singular", "plural")
+
+## Change the factor level order
+df_RT$Case <- factor(df_RT$Case, levels=c("case match", "case mismatch")) 
+df_RT$Number <- factor(df_RT$Number, levels = c("singular","plural"))
+
+plotRT <- ggplot(data = df_RT,
+              aes(x = Case, 
+                  y= mean.rt, group = Number, 
+                  color = Number)) +
+  geom_errorbar(aes(ymin = se.lower, ymax = se.upper),
+                width=.1,size=.4, show.legend=FALSE) +
+  geom_line(aes(linetype = Number), size=.4) +
+  geom_point(size=2, show.legend = FALSE) +
+  geom_line(aes(linetype = Number), size=.4) +
+  scale_color_manual(values = alpha(c("grey30", "grey30")))+
+  theme_bw(base_size = 12, base_family = "sans") +
+  labs(y = "[ms]",
+       title = "Response time")+
+  theme(legend.position="bottom")+
+  labs(
+    group="Attractor number",
+    linetype="Attractor number",
+    color="Attractor number") +
+  theme(plot.title = element_text(face = "bold"),
+             axis.title.x = element_blank()) 
+       
+
+# grid.arrange(plotAcc, plotRT, ncol=2)
+```
+
+```{r fig.width=10, fig.height=5}
+ggarrange(plotAcc, plotRT,  ncol = 2, align = "h", labels = c("A", "B"), common.legend = TRUE, legend = "bottom", font.label = list(size=14, family ="sans"))
+
+ggsave("ibexBarPlots.pdf", device = "pdf", width = 190, height = 95, units = "mm")
+```
+
+```{r}
+# Plot posterior probability distributions of accuracy effects
+df1 <- posterior_samples(macc_int, pars= c("b") ) %>%
+  mutate(case_effect = inv.logit(b_Intercept + b_case) - inv.logit(b_Intercept - b_case),
+         num_effect = inv.logit(b_Intercept + b_num) - inv.logit(b_Intercept - b_num),
+         inter_effect = inv.logit(b_Intercept + b_casexnum) - inv.logit(b_Intercept - b_casexnum))  
+
+color_scheme_set("gray")
+mcmc_areas(
+ df1,
+  pars = c("inter_effect", "num_effect", "case_effect"),
+  prob = 0.95,
+  prob_outer = 0.99, 
+  point_est = "mean") +
+  ggplot2::scale_y_discrete(labels = c("case ×\n number", "number", "case")) +
+  geom_vline(xintercept=0, linetype="dashed", color="red", size=.5) +
+  labs(x = "Estimates [proportions]",
+       title = "Accuracy analysis") +
+  bayesplot::theme_default(base_family = getOption("bayesplot.base_family", "sans"),
+                         base_size = getOption("bayesplot.base_size", 12)) +
+  theme(plot.title = element_text(face="bold")) +
+  scale_x_continuous(breaks=seq(-0.08,0.02, by=0.02),
+                     limits = c(-0.07,0.02),
+                     labels = function(x) round(as.numeric(x), digits=2)) -> density_acc_int
+```
+
+```{r}
+# Plot posterior probability distributions of RT effects
+df2<-posterior_samples(mrt_int, pars= c("b") ) %>%
+  mutate(case_effect = exp(b_Intercept + b_case) - exp(b_Intercept - b_case),
+         num_effect = exp(b_Intercept + b_num) - exp(b_Intercept - b_num),
+         inter_effect = exp(b_Intercept + b_casexnum) - exp(b_Intercept - b_casexnum))
+
+color_scheme_set("gray")
+mcmc_areas(
+ df2,
+  pars = c("inter_effect", "num_effect", "case_effect"),
+  prob = 0.95, 
+  prob_outer = 0.99, 
+  point_est = "mean") +
+  ggplot2::scale_y_discrete(labels = c("case ×\n attractor number", 
+                                       "attractor number", "case")) +
+  geom_vline(xintercept=0, linetype="dashed", color="red", size=.5) +
+  labs(x = "Estimates [ms]",
+       title = "Response time analysis") +
+bayesplot::theme_default(base_family = getOption("bayesplot.base_family", "sans"),
+                         base_size = getOption("bayesplot.base_size", 12)) +
+  theme(plot.title = element_text(face="bold")) -> density_rt_int
+
+```
+
+```{r fig.width=10, fig.height=5}
+ggarrange(density_acc_int, 
+                        density_rt_int +
+                        theme(axis.text.y = element_blank(),
+                        axis.ticks.y = element_blank()),
+                        ncol = 2, align = "hv",
+                        labels = c("A", "B"), 
+                        font.label = list(size=14, family ="sans")) 
+
+ggsave("ibexDensityPlots.pdf", device = "pdf", width = 190, height = 95, units = "mm")
+```
+
+\elandscape

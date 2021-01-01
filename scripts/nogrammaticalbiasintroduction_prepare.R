@@ -86,6 +86,7 @@ conditions_info <- data.frame(
   grammatical =   c("ungram",      "gram",        "ungram",      "gram",        "ungram",     "gram"),
   verb_num =      c("pl",          "sg",          "pl",          "sg",          "sg",         "pl"),
   attractor_num = c("pl",          "pl",          "sg",          "sg",          NA,           NA),
+  match =         c("mismatch",    "mismatch",    "match",       "match",       NA,           NA),
   stringsAsFactors = FALSE
 )
 

@@ -1,0 +1,4 @@
+workspace/fit_responses_cumulated.rds filter=lfs diff=lfs merge=lfs -text
+workspace/fit_responses_gbias.rds filter=lfs diff=lfs merge=lfs -text
+workspace/fit_responses_ungbias_new.rds filter=lfs diff=lfs merge=lfs -text
+workspace/fit_responses_ungbias_grouped.rds filter=lfs diff=lfs merge=lfs -text

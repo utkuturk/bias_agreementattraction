@@ -31,6 +31,9 @@ natturk <- df_forms_ungrammaticalBias %>% dplyr::filter(Sentence == "natturk") %
   dplyr::select(subject, natturk = Question)
 natturk$natturk <- ifelse(natturk$natturk == "male", "nat_turk", "nat_non_turk")
 forms_ungrammaticalBias <- dplyr::left_join(age, natturk, by = "subject")
+form_out <- "workspace/ungrammaticalBias_form.rds"
+saveRDS(forms_ungrammaticalBias, file = form_out)
+
 
 #extract stim and responses
 stopifnot( nrow(data_ungrammaticalBias) %% 2 == 0 )
@@ -51,9 +54,13 @@ data_ungrammaticalBias_practice %>% subset(Response == "NULL")
 data_ungrammaticalBias_practice$ResponseCorrect[data_ungrammaticalBias_practice$ResponseCorrect == "NULL"] <- 0
 data_ungrammaticalBias_practice$ResponseCorrect %<>%  as.integer()
 bad_subjects_by_practice <- data_ungrammaticalBias_practice %>% group_by(subject) %>% 
-  summarize(p_yes = mean(ResponseCorrect), meanRT = mean(RT)) %>% subset(p_yes <=0.6) %>% .$subject
-rows_resp_ungrammaticalBias_nobadpractice <- rows_resp_ungrammaticalBias %>% subset(!subject %in% bad_subjects_by_practice)
-forms_ungrammaticalBias_nobadpractice <- forms_ungrammaticalBias %>% subset(!subject %in% bad_subjects_by_practice)
+  summarize(p_yes = mean(ResponseCorrect), meanRT = mean(RT)) %>% subset(p_yes <=0.6) 
+bad_subjects_by_practice_list <- bad_subjects_by_practice %>% .$subject
+badsubj_out <- "workspace/ungrammaticalBias_badsubj.rds"
+saveRDS(bad_subjects_by_practice, file = badsubj_out)
+
+rows_resp_ungrammaticalBias_nobadpractice <- rows_resp_ungrammaticalBias %>% subset(!subject %in% bad_subjects_by_practice_list)
+forms_ungrammaticalBias_nobadpractice <- forms_ungrammaticalBias %>% subset(!subject %in% bad_subjects_by_practice_list)
 
 #prepare data for analysis.
 data_ungrammaticalBias_nobadpractice <- rows_resp_ungrammaticalBias_nobadpractice %>% 
@@ -86,9 +93,9 @@ conditions_info <- data.frame(
   grammatical =   c("ungram",      "gram",        "ungram",      "gram",        "ungram",     "gram"),
   verb_num =      c("pl",          "sg",          "pl",          "sg",          "sg",         "pl"),
   attractor_num = c("pl",          "pl",          "sg",          "sg",          NA,           NA),
+  match =         c("mismatch",    "mismatch",    "match",       "match",       NA,           NA),
   stringsAsFactors = FALSE
 )
-
 
 data_ungrammaticalBias_nobadpractice %<>% dplyr::select(-SentenceNoInStimFile) %>% 
   subset(natturk == "nat_turk") %>% 

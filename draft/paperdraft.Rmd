@@ -1,0 +1,1433 @@
+---
+title             : "Agreement Attraction in Turkish: Effects of Bias"
+shorttitle        : "current thesis draft"
+author            : 
+  - name          : "Utku Türk"
+    affiliation   : "1"
+    corresponding : yes    # Define only one corresponding author
+    address       : "JF Building, No:314"
+    email         : "utku.turk@boun.edu.tr"
+affiliation       :
+  - id            : "1"
+    institution   : "Boğaziçi University"
+authornote        : |
+abstract          : |
+bibliography      : ["`r rbbt::bbt_write_bib('biblio.json', overwrite = TRUE)`", "r-references.bib"]
+floatsintext      : yes
+figurelist        : no
+tablelist         : no
+footnotelist      : no
+linenumbers       : no
+mask              : no
+draft             : no
+numbersections    : yes
+geometry          : 
+- left=1in
+- right=1in
+- top=1in
+- bottom=1in
+#linestrech        : 1.25
+fontsize          : 10pt
+documentclass     : "apa6"
+classoption       : "doc"
+output:
+  papaja::apa6_pdf:
+    latex_engine: xelatex
+    includes:
+        in_header: paper_draft_preamble.tex
+editor_options: 
+  chunk_output_type: console
+keep_tex: TRUE
+keep_md: TRUE
+---
+
+```{r setup, eval =T, include = FALSE, message=FALSE, warning=FALSE}
+library("papaja")
+library(knitcitations)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(rstan)
+library(patchwork)
+library(brms)
+library(bayesplot)
+library(tidyr)
+## Save compiled models:
+rstan_options(auto_write = TRUE)
+rstan_options(silent = TRUE, open_progress=FALSE,show_messages=FALSE)
+rstan_options(javascript = FALSE)
+## Parallelize the chains using all   the cores:
+options(mc.cores = parallel::detectCores())
+# To solve some conflicts between  packages
+select <- dplyr::select
+extract <- rstan::extract
+source("../scripts/functions.R")
+source("../scripts/misc.R")
+theme_set(theme_bw())
+color_scheme_set("red")
+r_refs(file = "r-references.bib")
+my_citations <- cite_r(file = "r-references.bib")
+
+```
+
+```{r analysis-preferences, eval =T, message=FALSE, warning=FALSE}
+# Seed for random number generation
+set.seed(42)
+knitr::opts_chunk$set(encoding = 'UTF-8',
+                      cache.extra = knitr::rand_seed,
+                      echo = FALSE,
+                      warning = FALSE,
+                      results = 'asis')
+options("citation_format" = "pandoc")
+```
+
+```{r formsData, echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+
+fname_form_data_grammatical <- "../workspace/grammaticalBias_form.rds"
+form_data_grammatical <- readRDS(fname_form_data_grammatical)
+fname_form_data_ungrammatical <- "../workspace/ungrammaticalBias_form.rds"
+form_data_ungrammatical <- readRDS(fname_form_data_ungrammatical)
+fname_bad_data_grammatical <- "../workspace/grammaticalBias_badsubj.rds"
+bad_data_grammatical <- readRDS(fname_bad_data_grammatical)
+fname_bad_data_ungrammatical <- "../workspace/ungrammaticalBias_badsubj.rds"
+bad_data_ungrammatical <- readRDS(fname_bad_data_grammatical)
+
+
+Number_of_participants_ungrammatical <- length(unique(form_data_ungrammatical$subject))
+Number_of_exclusions_ungrammatical <- length(unique(bad_data_ungrammatical$subject))
+
+Number_of_participants_grammatical <- length(unique(form_data_grammatical$subject))
+Number_of_exclusions_grammatical <- length(unique(bad_data_grammatical$subject))
+
+
+```
+
+```{r dataWrangling,echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+
+fname_data <- "../workspace/exp_data.rds"
+data <- readRDS(fname_data)
+
+#lets only use grammaticality and ungrammaticality bias
+data$meaningfulExps <- with(data, exp_bias != "noInstruction")
+data %<>% filter(meaningfulExps) %>% 
+  dplyr::select(.,-meaningfulExps) 
+
+# let's create two different datasets for experiments, just for the sake.
+data_grammaticalityBias <- data %>% filter(exp_bias == "grammatical")
+data_ungrammaticalityBias <- data %>% filter(exp_bias == "ungrammatical") 
+data_ungrammaticalityBias$isGram <- ifelse(data_ungrammaticalityBias$grammatical == "ungram", F, T) 
+data_ungrammaticalityBias$p_acc <- with(data_ungrammaticalityBias, response_yes & isGram)
+data_grammaticalityBias$isGram <- ifelse(data_grammaticalityBias$grammatical == "ungram", F, T) 
+data_grammaticalityBias$p_acc <- with(data_grammaticalityBias, response_yes & isGram)
+
+# compute by-subject averages
+avgs_bysubj <- data %>% 
+  group_by(experiment, condition, exp_condition, grammatical, attractor_num, subject, exp_bias) %>% 
+  summarize(p_yes = mean(response_yes, na.rm = T) ) 
+avgs_bysubj$attractor_num[is.na(avgs_bysubj$attractor_num)] <- "filler"
+avgs_bysubj$c <- with(avgs_bysubj, { as.character(as.factor(paste(attractor_num, grammatical))) })
+
+# avgs_bysubj_wide <- data %>% 
+#   group_by(experiment, condition, exp_condition, grammatical, attractor_num, subject,exp_bias) %>% 
+#   summarize(p_yes = mean(response_yes, na.rm = T) ) %>%
+#   ungroup() %>% 
+#   dplyr::select(exp_condition, subject, p_yes,exp_bias) %>%
+#   tidyr::pivot_wider(names_from = exp_condition, values_from = p_yes) %>%
+#   mutate(delta_attr = condition_a - condition_c, # The difference in ungrammaticals
+#          delta_noattr = condition_d - condition_b, # The difference in grammaticals
+#          delta_fillers = filler_g - filler_ung) # The difference in fillers
+# 
+
+```
+
+# Summary {.unnumbered #summary}
+
+-   This file includes:
+
+    -   Tentative plannng for the thesis.
+    -   Descriptive Stats about the experiments.
+    -   Details (Material, Procedure, Participants) about the experiments.
+    -   2 maximal models for Exp1 (Ungrammatical Bias) data. 
+        -   Model 1 is a simple model with two (gram x attractor numb) predictors and by subject and by item slopes
+        -   Model 2 only includes a predictor that is based on effect sizes of participants. 
+    -   Information about what is going on bias-wise.
+    -   Descriptive Stats with participants grouped according to their bias.
+    -   Maximal modelling of all data with predictors of grammaticality, number of plural, categorical bias of the participant, and intended bias of the participants.
+
+# Chapter 1: Introduction {#intro}
+
+-   Aim and outline of the thesis.
+-   Scope of the thesis.
+-   Conventions used in the thesis.
+-   Statistical Interference (talk about bayes, brms, ROPE (Region of Practical Equivalence), priors)
+-   Organizaion of the thesis.
+
+
+# Chapter 2: Number Agreement Attraction {#aa}
+
+-   Accounts of agreement attraction
+
+    -   Representational Accounts: Eberhard
+    -   Retrieval accounts: Wagers
+    -   Probabilistic Accounts: Gibson
+
+-   Studies of Number Agreement Attraction
+    
+    -   Production
+    -   Comprehension
+        
+-   Number Agreement Attraction in Turkish
+
+# Chapter 3: Plural Agreement in Turkish
+
+-   Explanation of morphology
+-   possibility to not mark it.
+-   honorific aspect of it.
+
+# Chapter 4: Bias {#bias}
+
+-   Bias according to Signal Detection Theory
+-   Bias within the diffusion model
+-   Bias in Number Agreement Attraction Experiments
+
+# Chapter 5: Present Study
+
+-   Aim
+-   Research Question
+-   Hypothesis
+
+## Norming Study
+
+-   Items are presented in IbexFarm in a normal experimental procedure without any bias instruction.
+-   Experimental Items were distributed to among for different list according to Latin-square design. 
+-   All of the filler items ($N=60$) were presented.
+-   8 Masters students in Boğaziçi University completed the norming study.
+-   Both grammatical and ungrammatical items consist of two subcategories: templatic ($N=20$ each) and non-templatic ($N=10$ each) items.
+
+
+
+## Experiment 1: Ungrammatical Bias
+
+-   Our experiments are located in this link: \url{}.
+  
+### Methodology
+
+I report how the sample size is determined, in addition to the process of all data exclusions (if any), all manipulations, and all measures in the study. 
+  
+#### Participants
+  
+-   I recruited total number of `r Number_of_participants_ungrammatical` students from the Department of Linguistics at Boğaziçi University in exchange of 1 extra course credit to their overall grade.
+-   The average age of the participants is `r form_data_ungrammatical$age %>% as.integer() %>% mean() %>% round(., digits=2)`.
+-   I have excluded `r Number_of_exclusions_ungrammatical` of them due to their poor (below 60%) score in the practice items.
+-   Experiment were carried out following the Declaration of Helsinki and the regulations concerning ethics at research in Bo\u{g}azi\c{c}i University. All participants provided informed consent prior to their participation.
+
+#### Material
+
+##### Experimental Items
+
+-   Experiment 1 consists of 40 experimental items with 4 conditions.
+-   I have manipulated the attractor number (match x mismatch) and the sentence grammaticality (grammatical x ungrammatical).
+-   The head of subject phrase is always singular. In `match` conditions, the attractor number matches with the number of the head; that is, neither of them is marked with the plural suffix *-lar*. In `mismatch` condition, the attractor is plural, thus marked with *-lar* and mismatches with the head number-wise.
+-   Since the head is always singular, the verb is also singular in `grammatical` conditions and marked with *-lar*, thus plural, in `ungrammatical` conditions.
+-   Example set of sentences are given in \@ref(ItemsExpUng).
+-   All experimental materials follows the same template: \newline \emph{NP\textsubscript{\textsc{gen}}-NP\textsubscript{\textsc{poss}}-Adjunct\textsubscript{1}-Adjunct\textsubscript{2}-Verb}.
+-   Items used in this experiment were the exact items used in @TurkLogacev2020
+-   All items in Appendix. <!-- give ref -->
+  
+  ```{=tex}
+\begin{exe}
+\ex \label{ItemsExpUng}
+\begin{xlist}
+
+\ex \textsc{Mismatch - Ungrammatical} \label{item:exp1expitem-plpl} 
+\gll *[Yönetici-ler-in \textbf{aşcı-sı}] mutfak-ta sürekli \textbf{zıpla-dı-lar}.\\ 
+manager-\textsc{pl}-\textsc{gen}  cook-\textsc{poss} kitchen-\textsc{loc} non-stop  jump-\textsc{pst}-\textsc{pl}.\\
+\glt \textit{`The cooks of the manager were jumping in the kitchen non-stop.'}
+
+\ex \textsc{Mismatch - Grammatical} \label{item:exp1expitem-plsg} 
+  \gll [Yönetici-ler-in \textbf{aşcı-sı}] mutfak-ta sürekli \textbf{zıpla-dı}.\\ 
+  manager-\textsc{pl}-\textsc{gen}  cook-\textsc{poss} kitchen-\textsc{loc} non-stop  jump-\textsc{pst}.\\
+  \glt \textit{`The cooks of the manager was jumping in the kitchen non-stop.'}
+
+\ex \textsc{Match - Ungrammatical} \label{item:exp1expitem-sgpl} 
+\gll *[Yönetici-nin \textbf{aşcı-sı}] mutfak-ta sürekli \textbf{zıpla-dı-lar}.\\ 
+manager-\textsc{gen}  cook-\textsc{poss} kitchen-\textsc{loc} non-stop  jump-\textsc{pst}-\textsc{pl}.\\
+\glt \textit{`The cook of the manager were jumping in the kitchen non-stop.'}
+
+\ex \textsc{Match - Grammatical}\label{item:exp1expitem-sgsg}
+  \gll [Yönetici-nin \textbf{aşcı-sı}] mutfak-ta sürekli \textbf{zıpla-dı}. \\ 
+  manager-\textsc{gen}  cook-\textsc{poss} kitchen-\textsc{loc} non-stop  jump-\textsc{pst}.\\
+  \glt \textit{`The cook of the manager was jumping in the kitchen non-stop.'}
+\end{xlist}
+\end{exe}
+```
+
+##### Filler Items
+
+-   We have used 40 of 60 filler items from the norming study. 10 of them were grammatical and 30 of them were ungrammatical.
+-   The selection between the grammatical filler items made according to norming study results. We have selected 10 items that were found to be most acceptable.
+-   The verb in grammatical fillers is always plural.
+-   One group of the grammatical fillers ($N=6$) follows this template: \newline \emph{$\emptyset$ - [\textsubscript{Advcl} NP\textsubscript{\textsc{gen}}-NP\textsubscript{\textsc{poss}}-Adjunct-EmbeddedVerb ] -Verb}.
+-   The first two NPs form the subject phrase of the adverbial clause, and the matrix verb is saturated by a pro-dropped subject argument.
+-   The other group of the grammatical fillers ($N=4$) does not follow any template.
+-   The verb in ungrammatical fillers is always singular.
+-   A subset of the ungrammatical fillers ($N=20$) follows this template: \newline \emph{NP\textsubscript{\textsc{gen}}-NP\textsubscript{\textsc{poss}}-EmbeddedVerb ]-NP\textsubscript{\textsc{bare}}-Adjunct-Verb}
+-   The ungrammaticality is a result of the mismatch between the voice of the matrix verb and the morphology of the NP\textsubscript{\textsc{bare}}. Since the voice of the sentences are active and the NP\textsubscript{\textsc{bare}} is not in the immediately preverbal position, NP must have been marked with an accusative case. 
+  -   The rest of the ungrammatical fillers ($N=10$) does not follow a template.
+-   Example set of sentences are given in \@ref(FillersExpUng).
+-   All items in Appendix. <!-- give ref -->
+  
+  ```{=tex}
+\begin{exe}
+\ex \label{FillersExpUng}
+\begin{xlist}
+\ex \textsc{Grammatical Fillers}
+\gll Ekib-in teknisyen-i hızlı çalış-tığ-ın-dan tekrar çağır-dı-lar.\\
+crew-\textsc{gen} technician-\textsc{poss} fast work-\textsc{nmlz}-\textsc{poss}-\textsc{abl} again call-\textsc{pst}-\textsc{pl}.\\
+\glt \textit{`Since the crew technician worked fast, they ask for him again.}
+\ex \textsc{Ungrammatical Fillers}
+\gll *Dekan-ın davetli-si hapşur-unca çay-lar aniden düş-ür-dü.\\
+dean-\textsc{gen} guest-\textsc{poss} sneeze-\textsc{nmlz} tea-\textsc{pl} suddenly fall-\textsc{caus}-\textsc{pst}. \\
+\glt Intended: \textit{`When the dean's guest sneezed, teas spilled suddenly.}
+\end{xlist}
+\end{exe}
+```
+#### Procedure
+
+-   Participants were provided a IbexFarm link for the experiment.
+-   They were asked for their age and native language.
+-   They were informed on the length of the experiment and their rights.
+-   Upon giving consent, they were informed on the procedure of the experiment, which keys to use, and the question that they will be asked.
+-   Before doing practice items, they were given 4 example sentences.
+-   They were asked to be as fast as possible in answering the questions. However, they were not informed that there was a time limit.
+-   They were given error message saying "Please, be faster in answering questions," after they passed 5000 ms.
+-   They were given 9 practice items.
+-   After practice items, they have been prompted by a screen where they were informed about the grammaticality of the sentences in the experiment.
+-   Information: "Bu deneydeki cümlelerin ÇOĞU Türkçe kurallarına UYMAMAKTADIR!"
+-   Translation: "MOST of the sentences in this experiment do NOT COMFORT to Turkish grammar rules."
+-   They were asked to click a checkbox saying that they understood the information.
+-   RSVP; 400 ms per word; Acceptability Question; P for "acceptable", Q for "not acceptable".
+-   White screen before the items?
+-   The experiment only recorded their choice and response time.
+-   They were redirected to a separate page where they entered details in order to have extra credit.
+-   This information kept separate from the experiment.
+-   Stuff to be added:
+
+    -   Passing from one item to another: spacebar. 
+    -   How many ms between items etc. 
+    
+#### Predictions
+
+-   hmm.
+
+#### Analysis
+
+
+-   We fit two Bayesian Hierarchical models.  
+-   First model is without thinking about subject groupings.
+
+    -   Participants' responses were analyzed with the model using a Bernoulli distribution with a probit link and standard brms models. 
+    -   I included ungrammaticality of the sentence, the plurality of the attractor, and their interaction as a predictor.
+    -   Included varying by-participants and by-items intercepts and slopes.
+    -   Contrast coding:
+        
+        1.   `ungrammatical` is encoded as `0.5` and `grammatical` as `-0.5`.
+        2.   `plural` attractor is encoded as `0.5` and `singular` one as `-0.5`.
+        
+-   Second model is the same model as the first one, but I included the grouping of conservative vs non-conservative participants. 
+-   A participant is deemed conservative if they said `yes` less than 60\% times in the ungrammatical verb - plural attractor conditions. `Convervativity` is encoded as `0.5` and `Non-conservativity` as `-0.5`. The predictor conservativity is only added to the main function and not to the by-participants and by-items parts. 
+<!-- how to say this better? -->
+
+
+### Results
+
+-   hmm.
+
+#### Yes-Responses
+
+```{r DescpStats_Plotprepare, echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+data_ungrammaticalityBias_na_nofillers <- subset(data_ungrammaticalityBias, 
+                                                 is.na(response_yes) & experiment != "filler")
+# weed out the empty responses
+data_ungrammaticalityBias %<>% subset( !is.na(response_yes) )
+
+# create response correct value
+data_ungrammaticalityBias %<>% mutate(ResponseCorrect = (response_yes == (grammatical == "gram") ) )
+
+# give it a better name
+data_ungrammaticalityBias_nonna <- data_ungrammaticalityBias %>% subset(!is.na(response_yes))
+
+
+# create lists of dataframes with averages in it for RT, RT correct and response accuracy
+avg_clean <- list()
+avg_clean$resp <- data_ungrammaticalityBias_nonna %>% 
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = response_yes, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = TRUE)
+  })
+
+avg_clean$rt <- data_ungrammaticalityBias_nonna %>%
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = RT, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = FALSE)
+  })
+
+avg_clean$rt_correct <- data_ungrammaticalityBias_nonna %>% subset(ResponseCorrect) %>%
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = RT, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = FALSE)
+  })
+
+avg_exp1 <- avg_clean %>% 
+  lapply(function(df) { df %>% subset(is.na(source) | experiment != "filler") })
+avg_fillers1 <- avg_clean %>% 
+  lapply(function(df) { df %>% subset(experiment == "filler") })
+
+
+pd <- position_dodge(0.0)
+p_avg_resp <- avg_exp1$resp %>%
+  ggplot(aes(grammatical, M, #linetype = attractor_num, 
+             color = attractor_num, group = attractor_num)) + 
+  geom_point(position = pd) + geom_line(position = pd)
+
+p_avg_resp <- p_avg_resp + geom_errorbar(aes(ymin = M - 1.96*SE, ymax = M + 1.96*SE), width = 0.1, position = pd)
+
+# p_avg_resp <- p_avg_resp + geom_line(data = avg_fillers) + 
+#                             geom_point(data = avg_fillers) + 
+
+p_avg_resp <- p_avg_resp + theme( strip.background = element_rect(fill="white") ) +
+  theme_bw() + xlab("") + ylab("Percentage 'acceptable'")
+p_avg_resp <- p_avg_resp + scale_y_continuous(labels=scales::percent)#, breaks = c(0, .25, .5, .75, 1))
+p_avg_resp <- p_avg_resp + theme_bw()
+p_avg_resp <- p_avg_resp + scale_color_discrete(name = "Attractor Number", labels = c("Plural", "Singular")) + scale_x_discrete(labels = c("Grammatical\nSingular Verb", "Ungrammatical\nPlural Verb")) #+ theme(text = element_text(size = 20))
+
+byparticipant_ungBias <- data_ungrammaticalityBias %>% 
+  filter(condition == "a") %>% 
+  group_by(subject) %>%
+  summarize(avRT = mean(RT), 
+            p_yes = mean(response_yes, na.rm = T), 
+            N = sum(!is.na(response_yes)),
+            CI = 1.96*(sd(response_yes)/sqrt(length(response_yes))))
+
+p_bysubject <- byparticipant_ungBias %>% 
+  ggplot(aes(p_yes, reorder(subject,p_yes))) + geom_point() +
+  geom_errorbar(aes(xmin = ifelse(p_yes-CI<=0, 0,p_yes-CI), 
+                    xmax = ifelse(p_yes+CI>=1, 1,p_yes+CI))) +
+  xlab("") + 
+  ylab("Subjects")
+
+p_byitem <- data_ungrammaticalityBias %>% 
+  filter(condition == "a") %>% 
+  group_by(item) %>%
+  summarize(avRT = mean(RT), 
+            p_yes = mean(response_yes, na.rm = T), 
+            N = sum(!is.na(response_yes)),
+            CI = 1.96*(sd(response_yes)/sqrt(length(response_yes)))) %>% 
+  ggplot(aes(p_yes, reorder(item,p_yes))) + geom_point() +
+  geom_errorbar(aes(xmin = ifelse(p_yes-CI<=0, 0,p_yes-CI), 
+                    xmax = ifelse(p_yes+CI>=1, 1,p_yes+CI))) +
+  xlab("") + 
+  ylab("Items")
+
+
+p_rt <- avg_exp1$rt_correct %>%
+  ggplot(aes(grammatical, M, #linetype = attractor_num, 
+             color = attractor_num, group = attractor_num)) + 
+  geom_point(position = pd) + geom_line(position = pd)
+
+p_rt <- p_rt + geom_errorbar(aes(ymin = M - 1.96*SE, ymax = M + 1.96*SE), width = 0.1, position = pd)
+
+p_rt <- p_rt + theme( strip.background = element_rect(fill="white") ) +
+  theme_bw() + xlab("") + ylab("Response Time")
+p_rt <- p_rt + scale_y_continuous( limits = c(750,1250), expand = c(0,0) )
+p_rt <- p_rt + theme_bw()
+p_rt <- p_rt + scale_color_discrete(name = "Attractor Number", labels = c("Plural", "Singular")) + scale_x_discrete(labels = c("Grammatical\nSingular Verb", "Ungrammatical\nPlural Verb")) #+ theme(text = element_text(size = 20))
+```
+
+```{r Exp1:PrepareTextInputs, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+exp1_cur_entry_cond_a <- avg_exp1$resp %>% filter(grammatical == "ungram", attractor_num == "pl")
+exp1_cur_entry_cond_c <- avg_exp1$resp %>% filter(grammatical == "ungram", attractor_num == "sg")
+exp1_cur_entry_cond_d <- avg_exp1$resp %>% filter(grammatical == "gram", attractor_num == "sg")
+exp1_cur_entry_cond_b <- avg_exp1$resp %>% filter(grammatical == "gram", attractor_num == "pl")
+exp1_cur_entry_filler_gram <- avg_fillers1$resp %>% filter(grammatical == "gram")
+exp1_cur_entry_filler_ungram <- avg_fillers1$resp %>% filter(grammatical == "ungram")
+```
+
+-   hmm.
+
+##### Descriptive
+
+
+-   Seen in Figure \@ref(fig:UngBiasAvgResponse)
+
+    -   mismatch and ungrammatical: (M = `r printnum(exp1_cur_entry_cond_a$M)`, SE = `r printnum(exp1_cur_entry_cond_a$SE)`)
+
+    -   match and ungrammatical: (M = `r printnum(exp1_cur_entry_cond_c$M)`, SE = `r printnum(exp1_cur_entry_cond_c$SE)`)
+
+    -   mismatch and grammatical: (M = `r printnum(exp1_cur_entry_cond_b$M)`, SE = `r printnum(exp1_cur_entry_cond_b$SE)`)
+
+    -   match and grammatical: (M = `r printnum(exp1_cur_entry_cond_d$M)`, SE = `r printnum(exp1_cur_entry_cond_d$SE)`)
+
+    -   ungrammatical filler sentences: (M = `r printnum(exp1_cur_entry_filler_ungram$M)`, SE = `r printnum(exp1_cur_entry_filler_ungram$SE)`)
+
+    -   grammatical filler sentences: (M = `r printnum(exp1_cur_entry_filler_gram$M)`, SE = `r printnum(exp1_cur_entry_filler_gram$SE)`)
+
+```{r UngBiasAvgResponse,fig.height=3, fig.cap="Experiment 1 Average Accuracy. Error bars are 95% confidence intervals."}
+print(p_avg_resp)
+```
+
+
+-   The grammaticality status of the ungrammatical sentences with mismatching number are identified less easily than their matching counterpart.
+-   The effect size is comparable to previous studies in Turkish [@LagoEtAl2018; @TurkLogacev2020]: `r sprintf("%0.2f", exp1_cur_entry_cond_a$M-exp1_cur_entry_cond_c$M)`
+-   No difference in accuracy between the grammatical conditions: `r sprintf("%0.2f", exp1_cur_entry_cond_d$M-exp1_cur_entry_cond_b$M)`.
+-   Figure \@ref(fig:UngBiasSubjDiff) shows the mean accuracy percentages and credible intervals by subject in ungrammatical conditions with a plural attractor. 
+-   It *might* be a nice idea to include participant groups as a predictor in the model. 
+-   **Grammaticality assymetry still exists.**
+
+```{r UngBiasSubjDiff, fig.height = 6, fig.cap="Subject Accuracy Averages and CIs"}
+p_bysubject + p_byitem
+```
+
+
+##### Modelling
+
+
+```{r UngBiasModel2Models}
+# group subjects according to their percentage of average
+# TODO: I should have grouped them according to their effects
+byparticipant_ungBias %<>% within(., cConservative <- ifelse(p_yes <=0.6, .5, -.5))
+
+# create a df to merge
+tomerge_byparticipant <- byparticipant_ungBias %>% select(subject,cConservative)
+
+# merge it with the main df
+data_ungrammaticalityBias_nonna <- left_join(data_ungrammaticalityBias_nonna, tomerge_byparticipant, by="subject")
+stopifnot(data_ungrammaticalityBias_nonna %>% group_by(subject) %>% summarize(m=mean(cConservative)) == tomerge_byparticipant)
+
+# sum contrasts
+data_ungrammaticalityBias_nonna %<>% within(., {
+  cUngrammatical <- ifelse(grammatical == "ungram", .5, -.5)
+  cAttractorPlural <- ifelse(attractor_num == "pl", .5, -.5)
+})
+
+# get only experimental items
+data_ungrammaticalityBias_nonna_nofillers <- data_ungrammaticalityBias_nonna %>% 
+  subset(is.na(experiment) | experiment != "filler")
+
+# first model without conservativity
+
+fname_exp1_responses <- "../workspace/fit_responses_ungbias_new"
+m_responses <- brm(response_yes ~  cUngrammatical * cAttractorPlural +
+                     (cUngrammatical * cAttractorPlural + 1| subject)+
+                     (cUngrammatical * cAttractorPlural + 1| item),
+                   data = data_ungrammaticalityBias_nonna_nofillers,
+                   family = bernoulli("logit"),
+                   warmup = 2000,
+                   chains = 4, iter = 20000, core = 4,
+                   file = fname_exp1_responses,
+                   save_all_pars = T)
+
+# a model with conservativity
+
+fname_exp1_responses_grouped <- "../workspace/fit_responses_ungbias_grouped"
+m_responses_grouped <- brm(response_yes ~  cConservative * cUngrammatical * cAttractorPlural +
+                             (cUngrammatical * cAttractorPlural + 1| subject)+
+                             (cUngrammatical * cAttractorPlural + 1| item),
+                           data = data_ungrammaticalityBias_nonna_nofillers,
+                           family = bernoulli("logit"),
+                           warmup = 2000,
+                           chains = 4, iter = 20000, core = 4,
+                           file = fname_exp1_responses_grouped,
+                           save_all_pars = T)
+
+```
+
+```{r ModelPlots2Models}
+contrast_names <- c("cUngrammatical" = "Ungrammaticality",
+                    "cAttractorPlural" = "Plural Attactor",
+                    "cUngrammatical:cAttractorPlural" = "Ungrammaticality * Plural Attractor\nAgreement Attraction")
+
+p_m_response <- 
+  create_model_coefs_plot( m_responses, 
+        plot_stats = T, map_names = contrast_names,
+        expand_right = 2.5, expand_top = 2, x_stat_adjust = 1.1,
+        x_breaks = c(-3,-2,-1, 0,1, 2) ) + 
+        xlab("Estimate (log-odds)")
+
+# p_m_response <-
+# suppressWarnings({
+# print(p_m_response + annotate(x=-3, xend=2, y=0, yend=0, lwd=0.25, geom="segment"))
+# })
+
+contrast_names_grouped <- c("cUngrammatical" = "Ungrammaticality",
+                    "cAttractorPlural" = "Plural Attactor",
+                    "cConservative" = "Conservativity",
+                    "cUngrammatical:cAttractorPlural" = "Ungrammaticality * Plural Attractor\nAgreement Attraction",
+                    "cConservative:cUngrammatical" = "Conservativity * Ungrammaticality",
+                    "cConservative:cAttractorPlural" = "Conservativity * Plural Attractor",
+                    "cConservative:cUngrammatical:cAttractorPlural" = "Conservativity * Ungrammaticality * Plural Attractor\n Conservativity * Agreement Attraction"
+                    )
+
+p_m_response_grouped <- 
+  create_model_coefs_plot( m_responses_grouped, 
+        plot_stats = T, map_names = contrast_names_grouped,
+        expand_right = 2.5, expand_top = 2, x_stat_adjust = 1.1,
+        x_breaks = c(-3,-2,-1, 0,1, 2) ) + 
+        xlab("Estimate (log-odds)")
+
+# p_m_response <-
+# suppressWarnings({
+# print(p_m_response + annotate(x=-3, xend=2, y=0, yend=0, lwd=0.25, geom="segment"))
+# })
+
+
+```
+
+**Model1**
+
+```{r Model1, fig.height = 2, fig.cap="Estimates and 95% credible intervals for the regression coefficients for the first model.  Within-subject 95% confidence intervals in brackets."}
+suppressWarnings({
+print(p_m_response + annotate(x=-3, xend=2, y=0, yend=0, lwd=0.25, geom="segment"))
+})
+```
+
+-   The first model's estimates and 95\% credible intervals are shown in \@ref(fig:Model1).
+-   Main `ungrammaticality` effect: `r print_estimate_with_ci( m_responses, 'cUngrammatical' )`. Participants may distinguish between ungrammatical and grammaticals.
+-   Interaction effect: `r print_estimate_with_ci( m_responses, 'cUngrammatical:cAttractorPlural')`. Clear effect of agreement attraction. 
+-   Question from Utku: Where to look for the effect of attractor plural in grammatical sentences? Should the model be built differently? 
+
+
+**Model2**
+
+
+```{r Model1Grouped, fig.height = 3, fig.cap="Estimates and 95% credible intervals for the regression coefficients for the second model.  Within-subject 95% confidence intervals in brackets."}
+suppressWarnings({
+print(p_m_response_grouped + annotate(x=-3, xend=2, y=0, yend=0, lwd=0.25, geom="segment"))
+})
+```
+
+-   The second model's estimates and 95\% credible intervals are shown in \@ref(fig:Model1Grouped).
+-   Main `ungrammaticality` effect: `r print_estimate_with_ci( m_responses_grouped, 'cUngrammatical' )`. Participants may distinguish between ungrammatical and grammaticals.
+-   Interaction effect: `r print_estimate_with_ci( m_responses_grouped, 'cUngrammatical:cAttractorPlural')`. Clear effect of agreement attraction. 
+-   It is clear that there is no different subject subgroups, at least the way I imagined them. <!-- prepare different cutting points and make a graph for them. -->
+
+##### ROPE (Region of Practical Equivalence)
+
+-   hmm
+
+#### Reading Times
+
+-   hmm
+
+##### Descriptive
+
+-   hmm
+
+##### Modelling
+
+-   hmm
+
+##### ROPE (Region of Practical Equivalence)
+
+-   hmm
+
+\newpage 
+
+## Experiment 2: Grammatical Bias
+
+-   Our experiments are located in this link: \url{}.
+
+### Methodology
+
+I report how I determined our sample size, all data exclusions (if any), all manipulations, and all measures in the study. <!-- 21-word solution (Simmons, Nelson & Simonsohn, 2012; retrieved from http://ssrn.com/abstract=2160588) -->
+
+#### Participants
+
+-   I recruited total number of `r Number_of_participants_grammatical` students from the Department of Linguistics at Boğaziçi University. 
+-   I have excluded `r Number_of_exclusions_grammatical` of them due to their poor (below 60%) score in the practice items.
+-   The average age of the participants is `r form_data_ungrammatical$age %>% as.integer() %>% mean() %>% round(., digits=2)`.
+-   Experiment were carried out following the Declaration of Helsinki and the regulations concerning ethics at research in Bo\u{g}azi\c{c}i University. All participants provided informed consent prior to their participation.
+
+
+#### Materials
+
+-   Same materials with the Experiment 1 were used.
+-   Reverse distribution to the grammatical and ungrammatical filler sentences were assigned.
+-   We have used 40 out of 60 filler items from the norming study. 10 of them were ungrammatical and 30 of them were grammatical.
+-   The selection between the ungrammatical filler items made according to norming study results. We have selected 10 items that were found to be least acceptable.
+-   The verb in grammatical fillers is always plural.
+-   One group of the grammatical fillers ($N=20$) follows this template: \newline \emph{$\emptyset$ - [\textsubscript{Advcl} NP\textsubscript{\textsc{gen}}-NP\textsubscript{\textsc{poss}}-Adjunct-EmbeddedVerb ] -Verb}.
+-   The first two NPs form the subject phrase of the adverbial clause, and the matrix verb is saturated by a pro-dropped subject argument.
+-   The other group of the grammatical fillers ($N=10$) does not follow any template.
+-   The verb in ungrammatical fillers is always singular.
+-   A subset of the ungrammatical fillers ($N=8$) follows this template: \newline \emph{NP\textsubscript{\textsc{gen}}-NP\textsubscript{\textsc{poss}}-EmbeddedVerb ]-NP\textsubscript{\textsc{bare}}-Adjunct-Verb}
+-   The ungrammaticality is a result of the mismatch between the voice of the matrix verb and the morphology of the NP\textsubscript{\textsc{bare}}. Since the voice of the sentences are active and the NP\textsubscript{\textsc{bare}} is not in the immediately preverbal position, NP must have been marked with an accusative case. 
+-   The rest of the ungrammatical fillers ($N=2$) does not follow a template.
+
+
+#### Procedure
+
+-   Same as the Experiment 1.
+-   Only difference: Bias instruction.
+-   They have been told that"Bu deneydeki cümlelerin ÇOĞU Türkçe kurallarına UYMAKTADIR!"
+-   Translation: "MOST of the sentences in this experiment DO COMFORT to Turkish grammar rules."
+
+
+#### Predictions
+
+-   hmm
+
+
+#### Analysis
+
+-   hmm
+
+
+### Results
+
+-   hmm
+
+#### Yes-Responses
+
+
+```{r DescpStats_Plotprepare2, echo=FALSE, message=FALSE, warning=FALSE, eval=TRUE}
+# na's within experimental items
+data_grammaticalityBias_na_nofillers <- subset(data_grammaticalityBias, 
+                                               is.na(response_yes) & experiment != "filler")
+# weed out na's
+data_grammaticalityBias %<>% subset( !is.na(response_yes) )
+
+# create response correct value
+data_grammaticalityBias %<>% mutate(ResponseCorrect = (response_yes == (grammatical == "gram") ) )
+
+# give a better name
+data_grammaticalityBias_nonna <- data_grammaticalityBias %>% subset(!is.na(response_yes))
+
+# create a list of dfs with averages
+avg_clean2 <- list()
+avg_clean2$resp <- data_grammaticalityBias_nonna %>% 
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = response_yes, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = TRUE)
+  })
+
+avg_clean2$rt <- data_grammaticalityBias_nonna %>%
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = RT, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = FALSE)
+  })
+
+avg_clean2$rt_correct <- data_grammaticalityBias_nonna %>% subset(ResponseCorrect) %>%
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = RT, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = FALSE)
+  })
+
+avg_exp2 <- avg_clean2 %>% 
+  lapply(function(df) { df %>% subset(is.na(source) | experiment != "filler") })
+avg_fillers2 <- avg_clean2 %>% 
+  lapply(function(df) { df %>% subset(experiment == "filler") })
+
+
+pd <- position_dodge(0.0)
+p_avg_resp2 <- avg_exp2$resp %>%
+  ggplot(aes(grammatical, M, #linetype = attractor_num, 
+             color = attractor_num, group = attractor_num)) + 
+  geom_point(position = pd) + geom_line(position = pd)
+
+p_avg_resp2 <- p_avg_resp2 + geom_errorbar(aes(ymin = M - 1.96*SE, ymax = M + 1.96*SE), width = 0.1, position = pd)
+
+# p_avg_resp <- p_avg_resp + geom_line(data = avg_fillers) + 
+#                             geom_point(data = avg_fillers) + 
+
+p_avg_resp2 <- p_avg_resp2 + theme( strip.background = element_rect(fill="white") ) +
+  theme_bw() + xlab("") + ylab("Percentage 'acceptable'")
+p_avg_resp2 <- p_avg_resp2 + scale_y_continuous(labels=scales::percent)#, breaks = c(0, .25, .5, .75, 1))
+p_avg_resp2 <- p_avg_resp2 + theme_bw()
+p_avg_resp2 <- p_avg_resp2 + scale_color_discrete(name = "Attractor Number", labels = c("Plural", "Singular")) + 
+  scale_x_discrete(labels = c("Grammatical\nSingular Verb", "Ungrammatical\nPlural Verb")) #+ 
+  #theme(text = element_text(size = 20))
+
+byparticipant_gBias <- data_grammaticalityBias %>% 
+  filter(condition == "a") %>% 
+  group_by(subject) %>%
+  summarize(avRT = mean(RT), 
+            p_yes = mean(response_yes, na.rm = T), 
+            N = sum(!is.na(response_yes)),
+            CI = 1.96*(sd(response_yes)/sqrt(length(response_yes))))
+
+p_bysubject2 <- byparticipant_gBias %>% 
+  ggplot(aes(p_yes, reorder(subject,p_yes))) + geom_point() +
+  geom_errorbar(aes(xmin = ifelse(p_yes-CI<=0, 0,p_yes-CI), 
+                    xmax = ifelse(p_yes+CI>=1, 1,p_yes+CI))) +
+  xlab("") + 
+  ylab("Subjects")
+
+p_byitem2 <- data_ungrammaticalityBias %>% 
+  filter(condition == "a") %>% 
+  group_by(item) %>%
+  summarize(avRT = mean(RT), 
+            p_yes = mean(response_yes, na.rm = T), 
+            N = sum(!is.na(response_yes)),
+            CI = 1.96*(sd(response_yes)/sqrt(length(response_yes)))) %>% 
+  ggplot(aes(p_yes, reorder(item,p_yes))) + geom_point() +
+  geom_errorbar(aes(xmin = ifelse(p_yes-CI<=0, 0,p_yes-CI), 
+                    xmax = ifelse(p_yes+CI>=1, 1,p_yes+CI))) +
+  xlab("") + 
+  ylab("Items")
+
+p_rt2 <- avg_exp2$rt_correct %>%
+  ggplot(aes(grammatical, M, #linetype = attractor_num, 
+             color = attractor_num, group = attractor_num)) + 
+  geom_point(position = pd) + geom_line(position = pd)
+
+p_rt2 <- p_rt2 + geom_errorbar(aes(ymin = M - 1.96*SE, ymax = M + 1.96*SE), width = 0.1, position = pd)
+
+p_rt2 <- p_rt2 + theme( strip.background = element_rect(fill="white") ) +
+  theme_bw() + xlab("") + ylab("Response Time")
+p_rt2 <- p_rt2 + scale_y_continuous( limits = c(750,1250), expand = c(0,0) )
+p_rt2 <- p_rt2 + theme_bw()
+p_rt2 <- p_rt2 + scale_color_discrete(name = "Attractor Number", labels = c("Plural", "Singular")) + 
+  scale_x_discrete(labels = c("Grammatical\nSingular Verb", "Ungrammatical\nPlural Verb")) #+ theme(text = element_text(size = 20))
+```
+
+```{r Exp2:PrepareTextInputs, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+exp2_cur_entry_cond_a <- avg_exp2$resp %>% filter(grammatical == "ungram", attractor_num == "pl")
+exp2_cur_entry_cond_c <- avg_exp2$resp %>% filter(grammatical == "ungram", attractor_num == "sg")
+exp2_cur_entry_cond_d <- avg_exp2$resp %>% filter(grammatical == "gram", attractor_num == "sg")
+exp2_cur_entry_cond_b <- avg_exp2$resp %>% filter(grammatical == "gram", attractor_num == "pl")
+exp2_cur_entry_filler_gram <- avg_fillers2$resp %>% filter(grammatical == "gram")
+exp2_cur_entry_filler_ungram <- avg_fillers2$resp %>% filter(grammatical == "ungram")
+```
+
+-   hmm
+
+##### Descriptive
+
+
+
+-   Seen in Figure \@ref(fig:GBiasAvgResponse)
+
+    -   mismatch and ungrammatical: (M = `r printnum(exp2_cur_entry_cond_a$M)`, SE = `r printnum(exp2_cur_entry_cond_a$SE)`)
+
+    -   match and ungrammatical: (M = `r printnum(exp2_cur_entry_cond_c$M)`, SE = `r printnum(exp2_cur_entry_cond_c$SE)`)
+
+    -   mismatch and grammatical: (M = `r printnum(exp2_cur_entry_cond_b$M)`, SE = `r printnum(exp2_cur_entry_cond_b$SE)`)
+
+    -   match and grammatical: (M = `r printnum(exp2_cur_entry_cond_d$M)`, SE = `r printnum(exp2_cur_entry_cond_d$SE)`)
+
+    -   ungrammatical filler sentences: (M = `r printnum(exp2_cur_entry_filler_ungram$M)`, SE = `r printnum(exp2_cur_entry_filler_ungram$SE)`)
+
+    -   grammatical filler sentences: (M = `r printnum(exp2_cur_entry_filler_gram$M)`, SE = `r printnum(exp2_cur_entry_filler_gram$SE)`)
+
+```{r GBiasAvgResponse,fig.height=3, fig.cap="Experiment 1 Average Acceptability"}
+print(p_avg_resp2)
+```
+
+
+-   Ungrammatical sentences with mismatching head and attractor are more often identified correctly than their matching counterpart on average. However, the difference between them is not substantial. 
+-   The effect size is not comparable to previous studies in Turkish [@LagoEtAl2018; @TurkLogacev2020]: `r sprintf("%0.2f", exp2_cur_entry_cond_c$M-exp2_cur_entry_cond_a$M)`
+-   The effect size is substantially smaller than the Experiment 1: `r sprintf("%0.2f", (exp2_cur_entry_cond_a$M-exp2_cur_entry_cond_c$M) - (exp1_cur_entry_cond_a$M-exp1_cur_entry_cond_c$M))`
+-   The difference in accuracy between the grammatical conditions is really close to the that of ungramatical items: `r sprintf("%0.2f", exp1_cur_entry_cond_d$M-exp1_cur_entry_cond_b$M)`.
+-   Figure \@ref(fig:GBiasSubjDiff) shows the mean acceptability percentages and credible intervals by subject in ungrammatical conditions with a plural attractor. 
+-   By subject graphy looks closer to a simulated one. So, the variance is quite expected. 
+-   **Grammaticality assymetry still exists.**
+
+
+```{r GBiasSubjDiff, fig.height = 6, fig.cap="Subject Averages and CIs"}
+p_bysubject2 + p_byitem2
+```
+
+##### Modelling
+
+
+```{r GBiasModel}
+
+data_grammaticalityBias_nonna %<>% within(., {
+  cUngrammatical <- ifelse(grammatical == "ungram", .5, -.5)
+  cAttractorPlural <- ifelse(attractor_num == "pl", .5, -.5)
+})
+
+data_grammaticalityBias_nonna_nofillers <- data_grammaticalityBias_nonna %>% 
+  subset(is.na(experiment) | experiment != "filler")
+
+fname_exp2_responses <- "../workspace/fit_responses_gbias"
+m_responses2 <- brm(response_yes ~  cUngrammatical * cAttractorPlural+
+                     (cUngrammatical * cAttractorPlural + 1| subject)+
+                     (cUngrammatical * cAttractorPlural + 1| item),
+                   data = data_grammaticalityBias_nonna_nofillers,
+                   family = bernoulli("logit"),
+                   warmup = 2000,
+                   chains = 4, iter = 20000, core = 4,
+                   file = fname_exp2_responses,
+                   save_all_pars = T)
+
+
+```
+
+
+```{r ModelPlots2}
+contrast_names2 <- c("cUngrammatical" = "Ungrammaticality",
+                    "cAttractorPlural" = "Plural Attactor",
+                    "cUngrammatical:cAttractorPlural" = "Ungrammaticality * Plural Attractor\nAgreement Attraction")
+
+p_m_response2 <- 
+  create_model_coefs_plot( m_responses2, 
+                           plot_stats = T, map_names = contrast_names,
+                           expand_right = 2.5, expand_top = 2, x_stat_adjust = 1.1,
+                           x_breaks = c(-3,-2,-1, 0,1, 2) ) + 
+  xlab("Estimate (log-odds)")
+
+
+```
+
+
+```{r Model2, fig.height = 2, fig.cap="Estimates and 95% credible intervals for the regression coefficients for the first model.  Within-subject 95% confidence intervals in brackets."}
+
+suppressWarnings({
+print(p_m_response2 + annotate(x=-3, xend=2, y=0, yend=0, lwd=0.25, geom="segment"))
+})
+```
+
+-   The first model's estimates and 95\% credible intervals are shown in \@ref(fig:Model2).
+-   Main `ungrammaticality` effect: `r print_estimate_with_ci( m_responses2, 'cUngrammatical' )`. Participants may distinguish between ungrammatical and grammaticals.
+-   Interaction effect: `r print_estimate_with_ci( m_responses2, 'cUngrammatical:cAttractorPlural')`. Clear effect of agreement attraction. 
+
+##### ROPE (Region of Practical Equivalence)
+
+-   hmm
+
+
+#### Reading Times
+
+-   hmm
+
+##### Descriptive
+
+-   hmm
+
+##### Modelling
+
+-   hmm
+
+
+##### ROPE (Region of Practical Equivalence)
+
+-   hmm
+
+
+
+
+
+
+## Discussion
+
+
+-   Write here some stuff that what we have expected and how it is not we found at all.
+-   So, maybe we should check for bias and group people according to the bias.
+-   Our manipulation may 
+
+\newpage
+
+# Chapter 6: Post-Hoc Bias Analysis
+
+-   Following @MacmillanCreelman2005, we calculate _c_ values of the participants. 
+-   Formula used is as the following: 
+
+$c = - \frac{Z(Hit\ Rate)\ +\ Z(False\ Alarm\ Rate)}{2}$
+
+-   Negative c implies bias towards grammatical responses.
+-   Positive c implies bias towards ungrammatical responses.
+-   The main point in @HammerlyEtAl2019 was that in the experiment with no manipulation the _c_ value was negative and participants were biased towards grammatical responses. 
+-   With their manipulations, they had average _c_ values that are mainly centered around zero.
+
+
+-   In this work, we will use the same formula for calculating _c_ values and the same code that @HammerlyEtAl2019 used. 
+-   However, unlike Hammerly et al., we will use only the filler items for the calculation. The reason behind this is that using experimental items in _c_ value calculation will create a confound where the _c_ values are affected by the degree of agreement attraction and all becomes circular.
+-   After cutting the cake as people with grammatical and ungrammatical response bias, we plotted the descriptive stats to have a general picture.
+-   Lastly, we fitted a model where we included the predictors for the categorical bias, grammaticality, and plural attractor. 
+
+```{r BiasCalculation}
+# get the fillers from experiments
+ung.filler <- data_ungrammaticalityBias_nonna %>% subset(!is.na(response_yes) & experiment == "filler")
+g.filler <- data_grammaticalityBias_nonna %>% subset(!is.na(response_yes) & experiment == "filler")
+
+# select relevant columns for the analysis and bind the dfs
+ung.filler %<>% select(item, RT, subject, response_yes, grammatical, exp_bias, ResponseCorrect)
+g.filler %<>% select(item, RT, subject, response_yes, grammatical, exp_bias, ResponseCorrect)
+all.filler <- rbind(ung.filler, g.filler)
+
+# c value calculation
+
+bias.filler <- all.filler %>% #filter(experiment == "filler") %>% 
+  #subset( !is.na(ResponseCorrect) ) %>% 
+  group_by(subject,grammatical, exp_bias) %>%
+  mutate(correct = sum(ResponseCorrect) +.5 ) %>% # Calculate accuracy for grammatical and ungrammatical sentences.  .5 is added to allow for bias calculation for participants with HR = 1 or FA = 0
+  mutate(numItem = n_distinct(item)+1) %>%  # Calculate number of items for each subject (accounts for excluded trials, and for bias by adding 1)
+  mutate(mean = correct/numItem) %>%  # Average accuracy for each condition
+  group_by(subject,grammatical,exp_bias) %>%
+  summarise(average = mean(mean)) %>%
+  spread(grammatical,average) %>%
+  mutate(FA = 1 - ungram, hit = gram) %>%  # Calculate FA and HR with respect to grammatical responses
+  group_by(subject,exp_bias) %>%
+  summarise(bias = -.5*(qnorm(hit)+qnorm(FA)))   # Calculate signal detection bias for each participant
+
+# plotting
+bias.filler$subj_expbias <- paste(bias.filler$subject, bias.filler$exp_bias) 
+bias.filler$exp_bias <- ifelse(bias.filler$exp_bias == "grammatical", 
+                               "Experiment 2 (Towards Grammatical)", 
+                               "Experiment 1 (Towards Ungrammatical)")
+point.plot.bias.all <-
+bias.filler %>% #subset(exp_bias == "Experiment 1 (Towards Ungrammatical)") %>%  
+  ggplot(aes(bias, subj_expbias, color = exp_bias)) + 
+  geom_point() +
+  xlab("c-value") +
+  ylab("Subject ID") + 
+  #ggtitle("By Participant Bias Values using Fillers for Exp2") +
+  theme(strip.background = element_rect(fill="white")) + theme_bw() +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        #text=element_text(size=15),
+        legend.position = c(0.9, 0.15)) + #facet_wrap(~exp_bias)
+  scale_color_discrete(name = "Experiment Condition", 
+                       labels = c("Ungrammatical Bias", "Gramatical Bias"))
+
+```
+
+
+## Bias Distribution within Experiments
+
+-   Within our experiments, it is possible that we have failed the manipulate bias of the participants uniformly. 
+-   In order to check it, we have calculated the bias within our experiments.
+-   Figure \@ref(fig:Biasbyexperiment) shows that participants with both positive and negative *c*-values can be found in either of the experiments. 
+-   From now on, we calculate the RTs and percentage of *yes* responses according to the grouping based on c-value.
+-   This will help us test whether or not we were able to replicate the predictions of the diffusion model.
+
+```{r Biasbyexperiment, fig.height = 2, fig.cap="Estimates and 95% credible intervals for the regression coefficients for the first model.  Within-subject 95% confidence intervals in brackets."}
+point.plot.bias.all
+```
+
+```{r betteranalysis}
+g <- data_grammaticalityBias_nonna %>% subset(!is.na(response_yes))
+ung <- data_ungrammaticalityBias_nonna %>% subset(!is.na(response_yes))
+
+g %<>% 
+  select(item, RT, experiment, subject, response_yes, 
+         grammatical, verb_num, attractor_num,exp_bias, ResponseCorrect)
+
+ung %<>% 
+  select(item, RT, subject, experiment, response_yes, 
+         grammatical, verb_num, attractor_num,exp_bias, ResponseCorrect)
+
+all.items <- rbind(g, ung)
+all.items$subj_expbias <- paste(all.items$subject, all.items$exp_bias) 
+bias.filler_use <- bias.filler %>% ungroup() %>% select(-subject, -exp_bias)
+df <- left_join(all.items, bias.filler_use, by="subj_expbias")
+df$bias_towards <- ifelse(df$bias < 0, "grammatical", "ungrammatical" )
+
+### bias towards grammatical
+avg_g_bias <- list()
+avg_g_bias$resp <- df %>% subset(bias_towards == "grammatical") %>% 
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = response_yes, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = TRUE)
+  })
+
+avg_g_bias$rt <- df %>% subset(bias_towards == "grammatical") %>%
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = RT, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = FALSE)
+  })
+
+avg_g_bias$rt_correct <- df %>% subset(bias_towards == "grammatical") %>% subset(ResponseCorrect) %>%
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = RT, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = FALSE)
+  })
+
+### bias towards ungrammatical
+avg_ung_bias <- list()
+avg_ung_bias$resp <- df %>% subset(bias_towards == "ungrammatical") %>% 
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = response_yes, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = TRUE)
+  })
+
+avg_ung_bias$rt <- df %>% subset(bias_towards == "ungrammatical") %>%
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = RT, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = FALSE)
+  })
+
+avg_ung_bias$rt_correct <- df %>% subset(bias_towards == "ungrammatical") %>% subset(ResponseCorrect) %>%
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = RT, 
+                        group = c("experiment", "grammatical", "attractor_num"), 
+                        is_proportion = FALSE)
+  })
+
+### not grouped
+avg_all <- list()
+avg_all$resp <- df %>% 
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = response_yes, 
+                        group = c("experiment", "grammatical", "attractor_num","exp_bias"), 
+                        is_proportion = TRUE)
+  })
+
+avg_all$rt <- df %>% 
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = RT, 
+                        group = c("experiment", "grammatical", "attractor_num","exp_bias"), 
+                        is_proportion = FALSE)
+  })
+
+avg_all$rt_correct <- df %>% subset(ResponseCorrect) %>%
+  plyr::ddply(c("experiment"), function(df) {
+    df %>% se_cousineau(n_conditions = 4, subject, DV = RT, 
+                        group = c("experiment", "grammatical", "attractor_num","exp_bias"), 
+                        is_proportion = FALSE)
+  })
+
+avg_all_exp <- avg_all %>% 
+  lapply(function(df) { df %>% subset(is.na(source) | experiment != "filler") })
+avg_all_fillers <- avg_all %>% 
+  lapply(function(df) { df %>% subset(experiment == "filler") })
+avg_g_exp <- avg_g_bias %>% 
+  lapply(function(df) { df %>% subset(is.na(source) | experiment != "filler") })
+avg_g_fillers <- avg_g_bias %>% 
+  lapply(function(df) { df %>% subset(experiment == "filler") })
+avg_ung_exp <- avg_ung_bias %>% 
+  lapply(function(df) { df %>% subset(is.na(source) | experiment != "filler") })
+avg_ung_fillers<- avg_ung_bias %>% 
+  lapply(function(df) { df %>% subset(experiment == "filler") })
+```
+
+```{r BiasedPlots}
+
+pd <- position_dodge(0.0)
+p_g_avg_resp <- avg_g_exp$resp %>%
+  ggplot(aes(grammatical, M, #linetype = attractor_num, 
+             color = attractor_num, group = attractor_num)) + 
+  geom_point(position = pd) + geom_line(position = pd)
+
+p_g_avg_resp <- p_g_avg_resp + geom_errorbar(aes(ymin = M - 1.96*SE, ymax = M + 1.96*SE), width = 0.1, position = pd)
+
+# p_avg_resp <- p_avg_resp + geom_line(data = avg_fillers) + 
+#                             geom_point(data = avg_fillers) + 
+
+p_g_avg_resp <- p_g_avg_resp + 
+  theme( strip.background = element_rect(fill="white") ) +
+  theme_bw() + xlab("") + ylab("Percentage 'acceptable'")
+p_g_avg_resp <- p_g_avg_resp + scale_y_continuous(labels=scales::percent)#, breaks = c(0, .25, .5, .75, 1))
+p_g_avg_resp <- p_g_avg_resp + theme_bw()
+p_g_avg_resp <- p_g_avg_resp + 
+  scale_color_discrete(name = "Attractor Number", labels = c("Plural", "Singular")) + 
+  scale_x_discrete(labels = c("Grammatical\nSingular Verb", "Ungrammatical\nPlural Verb")) + 
+  theme(#text = element_text(size = 20), 
+    legend.position = c(0.8, 0.8))
+
+
+avg_ung_exp$resp$grammatical2 <- ifelse(avg_ung_exp$resp$grammatical == "gram", 
+                                     "Grammatical\nSingular Verb", 
+                                     "Ungrammatical\nPlural Verb") 
+p_ung_avg_resp <- avg_ung_exp$resp %>%
+  ggplot(aes(grammatical2, M, #linetype = attractor_num, 
+             color = attractor_num, group = attractor_num)) + 
+  geom_point(position = pd) + geom_line(position = pd) + 
+  facet_wrap(~grammatical2, scales="free")
+
+p_ung_avg_resp <- p_ung_avg_resp + geom_errorbar(aes(ymin = M - 1.96*SE, ymax = M + 1.96*SE), width = 0.1, position = pd)
+
+# p_avg_resp <- p_avg_resp + geom_line(data = avg_fillers) + 
+#                             geom_point(data = avg_fillers) + 
+
+p_ung_avg_resp <- p_ung_avg_resp + 
+  theme( strip.background = element_rect(fill="white") ) +
+  theme_bw() + xlab("") + ylab("Percentage 'acceptable'")
+p_ung_avg_resp <- p_ung_avg_resp + scale_y_continuous(labels=scales::percent)#, breaks = c(0, .25, .5, .75, 1))
+p_ung_avg_resp <- p_ung_avg_resp + theme_bw()
+p_ung_avg_resp <- p_ung_avg_resp + 
+  scale_color_discrete(name = "Attractor Number", labels = c("Plural", "Singular")) + 
+  scale_x_discrete(labels = c("", "")) #+ 
+  #theme(text = element_text(size = 20)#, legend.position = c(0.88, 0.8)
+  #)
+
+
+
+p_g_rt <- avg_g_exp$rt_correct %>%
+  ggplot(aes(grammatical, M, #linetype = attractor_num, 
+             color = attractor_num, group = attractor_num)) + 
+  geom_point(position = pd) + geom_line(position = pd)
+
+p_g_rt <- p_g_rt + geom_errorbar(aes(ymin = M - 1.96*SE, ymax = M + 1.96*SE), width = 0.1, position = pd)
+
+p_g_rt <- p_g_rt + theme( strip.background = element_rect(fill="white") ) +
+  theme_bw() + xlab("") + ylab("Response Time")
+p_g_rt <- p_g_rt + scale_y_continuous( limits = c(700,1250), expand = c(0,0) )
+p_g_rt <- p_g_rt + theme_bw()
+p_g_rt <- p_g_rt + 
+  scale_color_discrete(name = "Attractor Number", labels = c("Plural", "Singular")) + 
+  scale_x_discrete(labels = c("Grammatical\nSingular Verb", "Ungrammatical\nPlural Verb")) + 
+  theme(#text = element_text(size = 15), 
+    legend.position = c(0.8, 0.2))
+
+
+
+p_ung_rt <- avg_ung_exp$rt_correct %>%
+  ggplot(aes(grammatical, M, #linetype = attractor_num, 
+             color = attractor_num, group = attractor_num)) + 
+  geom_point(position = pd) + geom_line(position = pd)
+
+p_ung_rt <- p_ung_rt + geom_errorbar(aes(ymin = M - 1.96*SE, ymax = M + 1.96*SE), width = 0.1, position = pd)
+
+p_ung_rt <- p_ung_rt + theme( strip.background = element_rect(fill="white") ) +
+  theme_bw() + xlab("") + ylab("Response Time")
+p_ung_rt <- p_ung_rt + scale_y_continuous( limits = c(700,1250), expand = c(0,0) )
+p_ung_rt <- p_ung_rt + theme_bw()
+p_ung_rt <- p_ung_rt + 
+  scale_color_discrete(name = "Attractor Number", labels = c("Plural", "Singular")) + 
+  scale_x_discrete(labels = c("Grammatical\nSingular Verb", "Ungrammatical\nPlural Verb")) + 
+  theme(#text = element_text(size = 15), 
+    legend.position = c(0.9, 0.15))
+
+
+
+
+new_pd <- position_dodge(0.2)
+p_all_avg_resp <- avg_all_exp$resp %>%
+  ggplot(aes(grammatical, M, linetype = exp_bias, 
+             color = attractor_num, 
+             group = interaction(attractor_num,exp_bias))) + 
+  geom_point(position = new_pd) + 
+  geom_line(position = new_pd)
+
+p_all_avg_resp <- p_all_avg_resp + geom_errorbar(aes(ymin = M - 1.96*SE, ymax = M + 1.96*SE), width = 0.1, position = new_pd)
+
+# p_avg_resp <- p_avg_resp + geom_line(data = avg_fillers) + 
+#                             geom_point(data = avg_fillers) + 
+
+p_all_avg_resp <- p_all_avg_resp + 
+  theme( strip.background = element_rect(fill="white") ) +
+  theme_bw() + xlab("") + ylab("Percentage 'acceptable'")
+p_all_avg_resp <- p_all_avg_resp + scale_y_continuous(labels=scales::percent)#, breaks = c(0, .25, .5, .75, 1))
+p_all_avg_resp <- p_all_avg_resp + theme_bw()
+p_all_avg_resp <- p_all_avg_resp + 
+  scale_color_discrete(name = "Attractor Number", labels = c("Plural", "Singular")) + 
+  scale_x_discrete(labels = c("Grammatical\nSingular Verb", "Ungrammatical\nPlural Verb")) + 
+  theme(#text = element_text(size = 15), 
+    legend.position = c(0.85, 0.6)) + 
+  scale_linetype_discrete(name = "Experiment Condition", 
+                          labels = c("Ungrammatical Bias", "Grammatical Bias"))
+
+
+
+```
+
+```{r curItemsBiasGrouped}
+g_bias_cond_a <- avg_g_exp$resp %>% filter(grammatical == "ungram", attractor_num == "pl")
+g_bias_cond_c <- avg_g_exp$resp %>% filter(grammatical == "ungram", attractor_num == "sg")
+g_bias_cond_d <- avg_g_exp$resp %>% filter(grammatical == "gram", attractor_num == "sg")
+g_bias_cond_b <- avg_g_exp$resp %>% filter(grammatical == "gram", attractor_num == "pl")
+ung_bias_cond_a <- avg_ung_exp$resp %>% filter(grammatical == "ungram", attractor_num == "pl")
+ung_bias_cond_c <- avg_ung_exp$resp %>% filter(grammatical == "ungram", attractor_num == "sg")
+ung_bias_cond_d <- avg_ung_exp$resp %>% filter(grammatical == "gram", attractor_num == "sg")
+ung_bias_cond_b <- avg_ung_exp$resp %>% filter(grammatical == "gram", attractor_num == "pl")
+g_bias_filler_gram <- avg_g_fillers$resp %>% filter(grammatical == "gram")
+g_bias_filler_ungram <- avg_g_fillers$resp %>% filter(grammatical == "ungram")
+ung_bias_filler_gram <- avg_ung_fillers$resp %>% filter(grammatical == "gram")
+ung_bias_filler_ungram <- avg_ung_fillers$resp %>% filter(grammatical == "ungram")
+```
+
+-   In our experiments, it first seemed like bias manipulation did not really matter for agreement attraction as previously suggested by @HammerlyEtAl2019. 
+-   When looked at closely, we have seen that our manipulations did not align with the overall bias within the experiments. This means that participants in our experiments were not grouped within positive or negative _c_-values. 
+-   Instead, they were all grouped around _c_-value $0$ regardless of our manipulation.
+-   Seeing this failure of manipulation, we grouped participants according to their _c_-values. 
+-   Our expectation is that when people have a positive _c_-value, they are biased towards ungrammatical responses. Therefore, their reading times in grammatical conditions will be slightly longer than the ones that are biased towards grammatical responses. This result is the direct result of diffusion model. 
+-   In addition, participants biased towards ungrammatical response should deem grammatical sentence ungramatical more often than the participants who are biased towards grammatical. This also follows the assumption of the diffusion model.
+-   For our purposes, what is interesting is that the illusion of ungrammaticality and the effect of plural attractor in this illusion. 
+-   Following the assumptions of Marking and Morphing combined with the diffusion model decision making, we would predict that similar to grammaticality illusion, people that are biased towards ungrammatical responses should also exhibit ungrammaticality illusion. And, similar to the case in grammaticality illusion, the magnituted of ungrammaticality illusion should also differ according to the existence of plural attractor. 
+-   That is, we expect when there is a plural attractor, people should do more errors in judging the sentence's grammaticality correctly regardless of sentence's grammaticality. 
+
+## Yes-Responses
+
+-   hmm
+
+### Descriptive Look
+
+-   Figure \@ref(fig:BeforeBiasDivide) shows the picture prior to our division with bias values. As it can be seen from the data, it seems like participants who that are intended to be biased towards ungrammatical responses do not show agreement attraction effects. Surprisingly, they accepted sentences with a plural attractors less often as acceptable sentences than the ones with a singular attractor when the sentence is grammatical. This finding is completely unexpected in any theoretical explanation of agreement attraction. 
+
+```{r BeforeBiasDivide, fig.height = 3, fig.cap="Percentage averages of yes responses. Solid lines represents grouping according to our bias manipulation while the color represents the attractor number. Error bars represents the standard error."}
+p_all_avg_resp
+```
+
+-   When we group according to the bias, the data seems more reasonable. 
+-   Figure \@ref(fig:UngBiasResponse) shows us that people make errors in judgment more often when the attractor is plural regardless of the grammaticality of the verb. And the difference in grammatical and ungrammatical sentences is substantial, meaning that error bars do not overlap. 
+-   Another thing that is interesting about this graph is that the magnitude of agreement attraction effect is lower than the previous studies in Turkish. We see that the difference within ungrammatical sentences is `r ung_bias_cond_a$M - ung_bias_cond_c$M`%. Previous experiments in @LagoEtAl2018 and @TurkLogacev2020 found the magnitude around 11%. 
+<!-- TODO: Load the analysis from the previous experiments.-->
+
+
+```{r UngBiasResponse, fig.height = 3, fig.cap="Percentage averages of yes responses of participants with positive c-value. Error bars represents the standard error."}
+p_ung_avg_resp
+```
+
+-   Contrary to what we see in Figure \@ref(fig:UngBiasResponse), in Figure \@ref(fig:GBiasResponse) we see that participants that are biased towards grammatical responses only make additional grammaticality judgment mistakes in ungrammatical sentences. This phenomenon is known as grammaticality asymmetry. 
+-  Similar percentages of acceptable responses within grammatical conditions are expected if the participants are biased towards grammatical responses. 
+-   Expectedly, the magnitude of agreement attraction within ungrammatical sentences is comparable to previous agreement attraction experiments in Turkish: `r g_bias_cond_a$M - g_bias_cond_c$M`%
+
+
+```{r GBiasResponse, fig.height = 3, fig.cap="Percentage averages of yes responses of participants with positive c-value. Error bars represents the standard error."}
+p_g_avg_resp
+```
+
+
+-   When grouped according to their c-values, percentage of yes responses becomes meaningful. 
+
+
+### Modelling Yes-Responses
+
+-   For more interference on responses, we have fitted a maximal model that uses following predictors and contrasts given in parentheses:
+
+    -   our intended bias manipulation (`0.5` for intended grammatical and `-0.5` intended ungrammatical), 
+    -   categorical version of calculated bias of the participants (`0.5` for bias towards grammatical and`-0.5` for ungrammatical), 
+    -   attractor number (`0.5` for plural and `-0.5` for singular)
+    -   ungrammaticality of the sentence (`0.5` for ungrammatical, `-0.5` for grammatical)
+    -   and their interactions.
+
+-   Additionally, we have included random slopes for ungrammaticality and plural attractor predictors for participants and random slopes for bias, ungrammaticality and plural attractor predictors for items.
+-   Our model also includes random intercepts for participants and items.
+-   In this model, we are using defaults priors from `brms` package.
+-   The formula used within `brm` function of `brms` package:
+
+\begin{verbatim}
+response_yes ~  cBias * cExp * cUngrammatical * cAttractorPlural +
+                (cUngrammatical * cAttractorPlural + 1| subject) +
+                (cBias * cUngrammatical * cAttractorPlural + 1| item)
+\end{verbatim}
+
+
+```{r modelafterbias}
+df %<>% within(., {
+  cBias <- ifelse(bias_towards == "grammatical", .5, -.5)
+  cExp <- ifelse(exp_bias == "grammatical", .5, -.5)
+  cUngrammatical <- ifelse(grammatical == "ungram", .5, -.5)
+  cAttractorPlural <- ifelse(attractor_num == "pl", .5, -.5)
+})
+
+df_nonna_nofiller <- df %>% 
+  subset(is.na(experiment) | experiment != "filler")
+
+fname_cumulated_fit <- "../workspace/fit_responses_cumulated"
+m_responses_cumulated <- 
+  brm(response_yes ~  cBias * cExp * cUngrammatical * cAttractorPlural+
+                     (cUngrammatical * cAttractorPlural + 1| subject)+
+                     (cBias * cUngrammatical * cAttractorPlural + 1| item),
+                   data = df_nonna_nofiller,
+                   family = bernoulli("logit"),
+                   warmup = 2000,
+                   chains = 4, iter = 20000, core = 4,
+                   file = fname_cumulated_fit,
+                   save_all_pars = T) 
+
+
+model.coef.plot <-
+mcmc_intervals(
+  m_responses_cumulated,
+  pars =  c(
+                  "b_cUngrammatical",
+                  "b_cAttractorPlural",
+                  "b_cBias",
+                  "b_cExp",
+                  "b_cUngrammatical:cAttractorPlural",
+                  "b_cBias:cUngrammatical:cAttractorPlural",
+                  "b_cExp:cUngrammatical:cAttractorPlural",
+                  "b_cBias:cExp:cUngrammatical:cAttractorPlural"),
+  point_est = "median",
+  prob = 0.8, prob_outer = 0.95
+) 
+model.coef.plot <- model.coef.plot + 
+  scale_y_discrete(labels = c(
+                              "Ungrammaticality",
+                              "Plural Attractor",
+                              "Gram. Bias",
+                              "Intended Gram. Bias",
+                              "Ungramm. * Pl. Attractor\nAgreement Attr.",
+                              "Bias * Agreement Attr.",
+                              "Intended Gram. Bias * Agreement Attr.\nBetter Name",
+                              "Bias * Better Name"))
+
+model.coef.plot <- model.coef.plot + vline_0(color = "blue", linetype = 2)
+```
+
+```{r BiasModelCoefPlot, fig.height = 3, fig.cap="Uncertainty intervals computed from posterior draws for selected coefficients. The estimate shown as point is the median value of the draws. The bold interval signifies the probability mass of 80%. The slim tails represents the probability mass from 80 to 95%."}
+model.coef.plot
+```
+
+-   The estimates from the certain coefficients of the model in Figure \@ref(fig:BiasModelCoefPlot) tells us that participants responses with less yes responses when the sentences were ungrammatical. 
+-   While people real grammatical bias gave more yes responses overall, our intended grammatical bias manipulation did the reverse effect. 
+-   In average, people showed agreement attraction effects, that is they gave more yes-responses when sentences were ungrammatical and there was a plural attractor.
+-   Our manipulation of grammatical bias seems to be not effective. The uncertainty intervals contains zero and the most of the mass is centered around the zero.
+-   It seems that real grammatical bias, on the other hand, affected agreement attraction within ungrammatical sentences negatively. People with negative _c_-values gave yes responses less often compared to people with positive _c_-values when the sentence is ungrammatical and there is a plural attractor.
+-   Questions:
+
+    -   how can I talk about the ungrammaticality illusion with this model?
+    -   What does it mean to have 4-way interaction? Something in the lines of: Our experimental manipulation worked better in catalizing agreement attraction effects when people were already biased?
+
+
+
+### ROPE (Region of Practical Equivalence)
+
+-   hmm
+
+
+## Reading Times
+
+-   hmm
+
+### Descriptive
+
+-   hmm
+
+### Modelling
+
+-   hmm
+
+### ROPE (Region of Practical Equivalence)
+
+-   hmm
+
+
+## Discussion
+
+-   hmm
+
+# Chapter 7: Conclusion
+
+-   hmm
+
+
+\newpage
+
+# References
+
+```{=tex}
+\begingroup
+\setlength{\parindent}{-0.5in}
+\setlength{\leftskip}{0.5in}
+```
+::: {#refs custom-style="Bibliography"}
+:::
+
+\endgroup

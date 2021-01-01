@@ -13,6 +13,23 @@ df <- readRDS(file = fname_data_out)
 df %>% group_by(exp_bias) %>% summarize(N = length(unique(subject)))
 df %<>% mutate(ResponseCorrect = (response_yes == (grammatical == "gram") ) )
 
+# compute by-subject percentages of 'yes' responses, and average RTs 
+avg_by_subj <- df %>%
+  group_by(subject, exp_bias, condition, 
+           grammatical, verb_num, attractor_num) %>%
+  summarize(avRT = mean(RT), 
+            p_yes = mean(response_yes, na.rm = T), 
+            N = sum(!is.na(response_yes))  )
+
+avg_by_subj_wide <- avg_by_subj %>% 
+  mutate(expcond = paste(experiment, condition, sep="_")) %>% 
+  ungroup() %>%
+  dplyr::select(-experiment, -condition, -avRT, -N,
+                -grammatical, -verb_num, -attractor_num) %>%
+  tidyr::spread(expcond, p_yes) %>% 
+  mutate(delta_dc = AgrAttr_d - AgrAttr_c)
+
+
 avg_clean <- list()
 avg_clean$resp <- df %>% 
   plyr::ddply(c("exp_bias"), function(df) {
@@ -59,7 +76,7 @@ p_avg_resp <- p_avg_resp + scale_color_discrete(name = "Attractor Number")
 
 
 
-#### BYSUBJECT------
+####BYSUBJECT------
 
 # compute by-subject averages
 avgs_bysubj <- 

@@ -1,0 +1,820 @@
+---
+title: "Experiment 2 (self-paced reading)"
+output: pdf_document
+---
+
+\large{R code to reproduce the analysis of Experiment 2 reported in the manuscript \emph{"Does case marking affect agreement attraction in comprehension?"}.} 
+
+```{r global_options, echo=FALSE}
+knitr::opts_chunk$set(fig.path='figures/fig-',
+               fig.align='center',
+               fig.show='hold',warning=FALSE,message=FALSE, echo = FALSE)
+
+```
+
+```{r load_data}
+# Load packages
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(brms)
+library(MASS)
+library(ggplot2)
+library(binom)
+library(boot) # for backtransformations
+library(ggpubr)
+library(brmstools)
+library(rstanarm)
+library(bayesplot)
+
+# Define functions
+# Function to calculate standard error.
+se <- function(x) {
+    return(sqrt(var(x,na.rm=TRUE)/length(na.omit(x))))
+}
+
+# Function to calculate binomial standard error.
+se.bin <- function(x){
+  n.success = sum(na.omit(x)) #x is coded as 1 (success) or 0 (failure), so number of successes is the sum of x = 1 
+  n         = length(na.omit(x))
+  p         = n.success / n
+  return(sqrt(p*(1-p)/n))
+}
+
+# Load data
+d <- read.csv("E2_data.csv", encoding="UTF-8", header=T)
+```
+
+# Participants 
+```{r}
+# Summarize demographic data in a table
+demographic <- d[!duplicated(d$subj),] # leave one row per participant
+demographicRel <- demographic[9:14] # select columns with relevant info
+
+options(knitr.kable.NA = '') # exclude NAs in the table
+kable(summary(demographicRel), 
+      booktabs=T, 
+      caption="Summary of participants' demographic characteristics. Data from all 48 participants were included in the analysis.")  %>%
+  kable_styling(latex_options = c("basic", "scale_down", "hold_position")) %>% 
+  row_spec(0,bold=TRUE)
+
+```
+
+```{r subset_data}
+# Subset data and convert factors
+d$subj<-factor(d$subj,levels=unique((d$subj))) 
+d<-subset(d,expt!="practice") # remove practice items
+
+filler<-subset(d, expt=="filler" & pos=="?") # subset filler items
+filler$expt<-factor(filler$expt,levels="filler")
+filler$accuracy<-as.numeric(as.character(filler$accuracy)) 
+
+target<-subset(d, expt=="attraction") # subset experimental items
+target$cond<-factor(target$cond,levels=letters[1:4]) 
+target$expt<-factor(target$expt,levels="attraction")
+```
+
+```{r data_summary, eval=FALSE}
+summary(d[,-6]) # exclude the column w/Armenian characters to prevent execution error
+```
+
+# Contrast coding 
+Note that the term “interference” applies to sentences with singular attractors in
+grammatical sentences (i.e., "a") but plural attractors in ungrammatical sentences (i.e., "d").
+
+***Main effects and interaction***
+```{r echo=TRUE}
+# Contrasts to evaluate the main effects of grammaticality ('gram'), 
+# number interference ('int'), and their interaction
+##         a   b    c   d
+#gram      1   1   -1  -1 # grammatical is 1, ungrammaticals is -1
+#int       1  -1   -1   1 # No-interference is -1, interference is 1
+target$gram<-ifelse(target$cond%in%c("a","b"),1,-1)
+target$int<-ifelse(target$cond%in%c("a","d"),1,-1)
+target$gramxint<-target$gram*target$int
+```
+
+***Nested comparisons***
+```{r echo=TRUE}
+# Contrasts to evaluate the number interference effect in grammatical (int_g)
+# and ungrammatical (int_u) sentences separately
+##          a   b   c   d
+#gram       1   1  -1  -1 # grammatical is 1, ungrammaticals is -1
+#int_g      1  -1   0   0 # No-interference is -1, interference is 1
+#int_u      0   0  -1   1
+target$int_g <-ifelse(target$cond=="a",1,ifelse(target$cond=="b",-1,0))
+target$int_u <-ifelse(target$cond=="c",-1,ifelse(target$cond=="d",1,0))
+```
+
+\newpage
+
+# Filler accuracy 
+* Overall accuracy (%) for the filler items
+```{r}
+filler %>% dplyr::summarize(
+  fillerAccuracy = round(100*mean(accuracy, na.rm = TRUE), digits=1),
+  fillerSE = round(100*se.bin(accuracy), digits=1)) 
+```
+
+\vspace{0.5cm}
+
+```{r fig.height=4, fig.width=7}
+# Compute mean accuracy for each participant for the filler items
+fillerAcc_bySubj <- filler %>% group_by(subj) %>% summarize(Filler_accuracy = round(100 *mean(accuracy), digits = 0))
+
+fillerAcc_bySubj$subj<-as.numeric(as.character
+                                  (fillerAcc_bySubj$subj))
+
+# Plot mean accuracy for each participant for the filler items  
+ggplot(fillerAcc_bySubj, aes(x = subj, y = Filler_accuracy )) + 
+  geom_point() +
+  scale_x_continuous(name="Participants", breaks=seq(1,48,2)) +
+  ylab("Accuracy (%)") -> bySubj_fillerPlot
+
+# Add titles
+bySubj_fillerPlot + labs(
+  title = "Mean accuracy per participant for the filler items",
+  subtitle = "Accuracy ranges from 71% to 100%")
+
+#range(fillerAcc_bySubj$Filler_accuracy)
+```
+
+\newpage
+
+# Target accuracy
+* Overall accuracy (%) for the experimental items
+```{r}
+targetAcc<-subset(target,  pos=="?")
+targetAcc$accuracy<-as.numeric(as.character(targetAcc$accuracy))
+
+# Compute overall target accuracy
+targetAcc %>% dplyr::summarize(
+  trgAccuracy = round(100*mean(accuracy, na.rm = TRUE), digits=1),
+  trgSE = round(100*se.bin(accuracy), digits=1))
+```
+
+```{r eval=FALSE}
+# Sanity check: everything is balanced
+xtabs(~subj+cond,targetAcc)
+xtabs(~item+cond,targetAcc)
+xtabs(~subj+item,targetAcc)
+```
+
+\vspace{0.5cm}
+
+```{r}
+# Compute mean accuracy for each condition for the experimental items
+target_acc_byCond <-targetAcc %>% group_by(cond) %>% summarize(
+  trgAccuracy = round(100 *mean(accuracy), digits = 1),
+  trgSE =  round(100*se.bin(accuracy), digits=1))
+
+colnames(target_acc_byCond) <- c("Condition", "Accuracy [%]", "SE")
+target_acc_byCond <- as.data.frame(target_acc_byCond)
+rownames(target_acc_byCond) <- c("grammatical, interference (w/sg. attractor)",
+                                 "grammatical, no-interference (w/pl. attractor)",
+                                 "ungrammatical, no-interference (w/sg. attractor)",
+                                 "ungrammatical, interference (w/pl. attractor)")
+
+# Present mean accuracy for each condition in a table
+target_acc_byCond %>%
+  kable(align="c", booktabs = T, 
+        caption = "Mean accuracy per condition for the experimental items") %>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) %>%
+  column_spec(1, width = "22em")
+```
+
+\vspace{0.5cm}
+
+```{r}
+# Compute mean accuracy for each participant for the experimental items
+targetAcc_bySubj <- targetAcc %>% group_by(subj) %>% summarize(target_accuracy = round(100 *mean(accuracy), digits = 0))
+
+targetAcc_bySubj$subj<-as.numeric(as.character
+                                  (targetAcc_bySubj$subj))
+
+
+# Plot mean accuracy for each participant for the experimental items
+ggplot(targetAcc_bySubj, aes(x = subj, y = target_accuracy )) + 
+  geom_point() +
+  scale_x_continuous(name="Participants", breaks=seq(1,48,2)) +
+  ylab("Accuracy (%)") -> bySubj_targetPlot
+
+# Add titles
+bySubj_targetPlot + labs(
+  title = "Mean accuracy per participant for the experimental items",
+  subtitle = "Accuracy ranges from 67% to 100%")
+
+# range(targetAcc_bySubj$target_accuracy)
+```
+\newpage
+
+# Reading time data 
+```{r}
+# Pre-process RT data/subset
+targetRT<-subset(target,pos!="?")
+colnames(targetRT)[7]<-"region"
+colnames(targetRT)[6]<-"word"
+
+targetRT$region<-factor(targetRT$region)
+
+rcverb<-subset(targetRT,region=="rcv") # subset RT in the critical region
+rcadv1<-subset(targetRT, region=="rcadv1") # subset RT in the post-critical region
+```
+
+***RT trimming.*** RTs below 200ms and above 8000ms are excluded.
+```{r echo=TRUE}
+## percent of data points trimmed across all regions
+targetTrimmed<-subset(targetRT, rt>200 & rt<8000)
+round(100*((dim(targetRT)[1]-dim(targetTrimmed)[1])/dim(targetRT)[1]), digits=1)
+
+## percent of data points trimmed in the critical region 
+rcverb_trimmed<-subset(rcverb, rt>200 & rt<8000)
+round(100*((dim(rcverb)[1]-dim(rcverb_trimmed)[1])/dim(rcverb)[1]), digits=2)
+
+## percent of data points trimmed in the post-critical region 
+rcadv1_trimmed<-subset(rcadv1, rt>200 & rt<8000)
+round(100*((dim(rcadv1)[1]-dim(rcadv1_trimmed)[1])/dim(rcadv1)[1]), digits=2)
+```
+
+\vspace{0.5cm}
+
+```{r}
+# Create RT boxplots for critical region
+op<-par(mfrow=c(1,2) ,pty="m")
+
+boxplot(rt~cond,rcverb_trimmed, 
+        col=c("grey","black"), 
+        border="brown", 
+        notch=TRUE, 
+        main="Raw RTs in critical region")
+
+boxplot(log(rt)~cond,rcverb_trimmed, 
+        col=c("grey","black"), 
+        border="brown", 
+        notch=TRUE, 
+        main="Log RTs in critical region")
+
+```
+
+```{r}
+# Create RT boxplots for post-critical region
+op<-par(mfrow=c(1,2) ,pty="m")
+boxplot(rt~cond,rcadv1_trimmed, 
+        col=c("grey","black"), 
+        border="brown", 
+        notch=TRUE, 
+        main="Raw RTs in post-critical region")
+
+boxplot(log(rt)~cond,rcadv1_trimmed, 
+        col=c("grey","black"), 
+        border="brown", 
+        notch=TRUE, 
+        main="Log RTs in post-critical region")
+```
+
+```{r eval=FALSE}
+# Create RT boxplots for critical+2 region
+op<-par(mfrow=c(1,2) ,pty="m")
+
+boxplot(rt~cond,rcadv2_trimmed, 
+        col=c("grey","black"), 
+        border="brown", notch=TRUE, 
+        main="Raw RTs in critical+2 region")
+
+boxplot(log(rt)~cond,rcadv2_trimmed, 
+        col=c("grey","black"), 
+        border="brown", notch=TRUE, 
+        main="Log RTs in critical+2 region")
+```
+
+```{r}
+# Compute mean RTs in the critical region for the four conditions
+critRT_byCond <- rcverb_trimmed %>% 
+  group_by(cond) %>% 
+  summarize(
+  rtMean = round(mean(rt), digits = 0),
+  rtSE = round(se(rt), digits = 0)
+  )
+
+colnames(critRT_byCond) <- c("Condition", "Mean RT [ms]", "SE")
+critRT_byCond <- as.data.frame(critRT_byCond)
+rownames(critRT_byCond) <- c("grammatical, interference (w/sg. attractor)",
+                                 "grammatical, no-interference (w/pl. attractor)",
+                                 "ungrammatical, no-interference (w/sg. attractor)",
+                                 "ungrammatical, interference (w/pl. attractor)")
+
+# Present mean RTs in the critical region in a table
+critRT_byCond %>%
+  kable(align="c", booktabs = T, 
+        caption = "Mean reading times in the critical region for the four conditions") %>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) %>%
+  column_spec(1, width = "22em")
+
+```
+
+\vspace{0.5cm}
+
+```{r}
+# Compute mean RTs in the post-critical region for the four conditions
+postCritRT_byCond<-rcadv1_trimmed %>% group_by(cond) %>% summarize(
+  rtMean = round(mean(rt), digits = 0),
+  rtSE = round(se(rt), digits = 0))
+
+colnames(postCritRT_byCond) <- c("Condition", "Mean RT [ms]", "SE")
+postCritRT_byCond <- as.data.frame(postCritRT_byCond)
+rownames(postCritRT_byCond) <- c("grammatical, interference (w/sg. attractor)",
+                                 "grammatical, no-interference (w/pl. attractor)",
+                                 "ungrammatical, no-interference (w/sg. attractor)",
+                                 "ungrammatical, interference (w/pl. attractor)")
+
+# Present mean RTs in the post-critical region in a table
+postCritRT_byCond %>%
+  kable(align="c", booktabs = T, 
+        caption = "Mean reading times in the post-critical region for the four conditions") %>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) %>%
+  column_spec(1, width = "22em")
+```
+
+\newpage
+
+# Priors 
+```{r echo=TRUE}
+# Priors for reading time analysis involving main effects and interaction
+priors_two_way <- c(set_prior("normal(0,10)", class="Intercept"),
+                 set_prior("normal(0,1)", class="b", coef="gram"),
+                 set_prior("normal(0,1)", class="b", coef="int"),
+                 set_prior("normal(0,1)", class="b", coef="gramxint"),
+                 set_prior("normal(0,1)", class="sd"),
+                 set_prior("normal(0,1)", class="sigma"),
+                 set_prior("lkj(2)", class="cor"))
+```
+
+```{r echo=TRUE}
+# Priors for reading time analysis involving nested comparisons
+priors_nested<- c(set_prior("normal(0,10)", class="Intercept"),
+           set_prior("normal(0,1)", class="b", coef="gram"),
+           set_prior("normal(0,1)", class="b", coef="int_g"),
+           set_prior("normal(0,1)", class="b", coef="int_u"),
+           set_prior("normal(0,1)", class="sd"),
+           set_prior("normal(0,1)", class="sigma"),
+           set_prior("lkj(2)", class="cor"))
+```
+
+```{r include=FALSE, cache=TRUE, cache.comments=FALSE}
+# Run model for RTs in the critical region to evaluate main effects of sentence grammaticality, number interference, and their interaction
+mrcv_int <- brm(formula = log(rt) ~ gram+int+gramxint+
+              (1+gram+int+gramxint|subj) + 
+              (1+gram+int+gramxint|item),
+            data = rcverb_trimmed, family = gaussian(), prior = priors_two_way,
+            iter = 2000, chains = 4, control = list(adapt_delta = 0.99))
+```
+
+```{r include=FALSE, cache=TRUE, cache.comments=FALSE}
+# Run model for RTs in the critical region to evaluate number interference effect in grammatical and ungrammatical sentences separately 
+mrcv_nested <- brm(formula = log(rt) ~ gram+int_g+int_u+
+              (1+gram+int_g+int_u|subj) + 
+              (1+gram+int_g+int_u|item),
+            data = rcverb_trimmed, family = gaussian(), prior = priors_nested,
+            iter = 2000, chains = 4, control = list(adapt_delta = 0.99))
+```
+
+```{r include=FALSE, cache=TRUE, cache.comments=FALSE}
+# Run model for RTs in the post-critical region to evaluate main effects of sentence grammaticality, number interference, and their interaction
+mrcadv1_int <- brm(formula = log(rt) ~ gram+int+gramxint+
+              (1+gram+int+gramxint|subj) + 
+              (1+gram+int+gramxint|item),
+            data = rcadv1_trimmed, family = gaussian(), prior = priors_two_way,
+            iter = 2000, chains = 4, control = list(adapt_delta = 0.99))
+```
+
+```{r include=FALSE, cache=TRUE, cache.comments=FALSE}
+# Run model for RTs in the post-critical region to evaluate number interference effect in grammatical and ungrammatical sentences separately
+mrcadv1_nested <- brm(formula = log(rt) ~ gram+int_g+int_u+
+              (1+gram+int_g+int_u|subj) + 
+              (1+gram+int_g+int_u|item),
+            data = rcadv1_trimmed, family = gaussian(), prior = priors_nested,
+            iter = 2000, chains = 4, control = list(adapt_delta = 0.99))
+```
+
+\newpage
+
+# Reading time analysis results
+In the tables below, each effect is described in terms of its posterior mean on log scale and the lower and upper bound of 95% credible interval.
+
+## Critical region
+```{r}
+# summarize model output in a table
+kable(fixef(mrcv_int), 
+      booktabs=T, 
+      caption = "Analysis results for the reading times in the critical region showing estimates for the main effects of grammaticality ('gram') and number interference ('int') as well as their interaction.") %>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) 
+```
+
+***Model estimates back-transformed to milliseconds***
+```{r}
+posterior_samples(mrcv_int, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_gram) - exp(b_Intercept - 
+                                                       b_gram))  %>%
+  summarize(Estimate_gram = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+#----------------------------------------------------#
+
+posterior_samples(mrcv_int, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_int) - exp(b_Intercept - 
+                                                       b_int))  %>%
+  summarize(Estimate_int = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+#----------------------------------------------------#
+
+posterior_samples(mrcv_int, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_gramxint) - exp(b_Intercept - 
+                                                       b_gramxint))  %>%
+  summarize(Estimate_gramxint = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+```
+
+```{r}
+# summarize model output in a table
+kable(fixef(mrcv_nested), 
+      booktabs=T, 
+      caption = "Analysis results for the reading times in the critical region showing estimates for the number interference effect in the grammatical (int\\_g) and ungrammatical sentences (int\\_u) separately.") %>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) 
+```
+
+***Model estimates back-transformed to milliseconds***
+```{r}
+posterior_samples(mrcv_nested, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_int_g) - exp(b_Intercept - 
+                                                       b_int_g))  %>%
+  summarize(Estimate_int_grammatical = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+#----------------------------------------------------#
+
+posterior_samples(mrcv_nested, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_int_u) - exp(b_Intercept - 
+                                                       b_int_u))  %>%
+  summarize(Estimate_int_ungrammatical = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+```
+
+\newpage
+
+## Post-critical region
+```{r}
+# summarize model output in a table
+kable(fixef(mrcadv1_int), 
+      booktabs=T, 
+      caption = "Analysis results for the reading times in the post-critical region showing estimates for the main effects of grammaticality ('gram') and number interference ('int') as well as their interaction.") %>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE)
+```
+
+***Model estimates back-transformed to milliseconds***
+```{r}
+posterior_samples(mrcadv1_int, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_gram) - exp(b_Intercept - 
+                                                       b_gram))  %>%
+  summarize(Estimate_gram = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+#----------------------------------------------------#
+
+posterior_samples(mrcadv1_int, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_int) - exp(b_Intercept - 
+                                                       b_int))  %>%
+  summarize(Estimate_int = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+#----------------------------------------------------#
+
+posterior_samples(mrcadv1_int, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_gramxint) - exp(b_Intercept - 
+                                                       b_gramxint))  %>%
+  summarize(Estimate_gramxint = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+```
+
+```{r}
+# summarize model output in a table
+kable(fixef(mrcadv1_nested), 
+      booktabs=T, 
+      caption = "Analysis results for the reading times in the post-critical region showing estimates for the number interference effect in the grammatical (int\\_g) and ungrammatical sentences (int\\_u) separately.") %>%
+  kable_styling(full_width = T, latex_options = "hold_position") %>% 
+  row_spec(0,bold=TRUE) 
+```
+
+***Model estimates back-transformed to milliseconds***
+```{r}
+posterior_samples(mrcadv1_nested, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_int_g) - exp(b_Intercept - 
+                                                       b_int_g))  %>%
+  summarize(Estimate_int_grammatical = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+#----------------------------------------------------#
+
+posterior_samples(mrcadv1_nested, pars= c("b") ) %>%
+  mutate(pred = exp(b_Intercept + b_int_u) - exp(b_Intercept - 
+                                                       b_int_u))  %>%
+  summarize(Estimate_int_ungrammatical = mean(pred) %>%
+              round %>% paste("ms"),
+            `95% CrI` = paste(round(quantile(pred,c(0.025,.975)),0), 
+                                collapse=", ") %>%
+              paste0("[",.,"]"))
+
+```
+
+
+# Plots
+## By-region RT plot
+```{r}
+# Plot region-by-region reading times
+dataPlots <- subset(
+  targetTrimmed, region %in% c("mcsubj", "rcpron", "rcsubj", "rcv", "rcadv1", "rcadv2"))
+
+dataPlots %>%
+  group_by(cond,region) %>%
+  summarize(
+    mean.rt = mean(rt),
+    se.lower = mean.rt - se(rt),
+    se.upper = mean.rt + se(rt),
+    ci.lower = mean.rt - 2*se(rt),
+    ci.upper = mean.rt + 2*se(rt)) -> df_byRegion
+
+df_byRegion$cond<-as.factor(df_byRegion$cond)
+df_byRegion$region<-factor(df_byRegion$region,levels=c("mcsubj","rcpron","rcsubj",
+                                     "rcv", "rcadv1","rcadv2"))
+
+foo<-rep(0, nrow(df_byRegion))
+foo[with(df_byRegion, region == "mcsubj")] = 1
+foo[with(df_byRegion, region == "rcpron")] = 2
+foo[with(df_byRegion, region == "rcsubj")] = 3
+foo[with(df_byRegion, region == "rcv")] =    4
+foo[with(df_byRegion, region == "rcadv1")] = 5
+foo[with(df_byRegion, region == "rcadv2")] = 6
+
+df_byRegion$region = with(df_byRegion, reorder(region, foo))
+rm(foo)
+
+## Change the factor level order
+df_byRegion$cond <- factor(df_byRegion$cond, levels = c("b","a", "c","d"))
+
+lbs=c("crit-3\nThe painter(s)","crit-2\nthat","crit-1\nthe sculptor","critical\nignored","crit+1\nexhibition", "crit+2\nduring")
+pd <- position_dodge(.3)
+p_byRegion <- ggplot(df_byRegion, 
+                     aes(x=region, y=mean.rt, group=cond, color = cond))+ 
+  geom_errorbar(aes(ymin=se.lower, ymax=se.upper),
+                width=.2,size=.4,show.legend = FALSE, position=pd) +
+  geom_line(aes(color=cond, linetype=cond), position=pd, size=.4) +
+  geom_point(aes(shape=cond, color=cond), size = 2, position=pd) +
+  scale_x_discrete(labels=lbs) +
+  theme_bw(base_family = "sans", base_size = 12)+
+  ylab("[ms]")+
+  scale_color_manual(values = c("#0072B2", "#0072B2", "red3", "red3"),
+                     labels = c("grammatical, no-interference",
+                                "grammatical, interference",
+                                "ungrammatical, no-interference",
+                                "ungrammatical, interference"))+
+  scale_linetype_manual(values=c("solid", "dashed", "solid", "dashed"),
+                   labels = c("grammatical, no-interference",
+                                "grammatical, interference",
+                                "ungrammatical, no-interference",
+                                "ungrammatical, interference"))+
+  scale_shape_manual(values=c(16,16, 17, 17),
+                     labels = c("grammatical, no-interference",
+                                "grammatical, interference",
+                                "ungrammatical, no-interference",
+                                "ungrammatical, interference"))+
+  theme(axis.text.x = element_text(
+        face=c("plain","plain","plain","bold","bold","plain")),
+        axis.title.x=element_blank(),
+        legend.position = c(0.82,0.85),
+        legend.key.width = unit(1.3,"cm"),
+        legend.title=element_blank(),
+        legend.key.size = unit(0.5, "cm"),
+        legend.text = element_text(size=9),
+        legend.spacing.x = unit(0,"cm"),
+        legend.margin = margin(t=-0.5, r=0, b=0, l=0, unit="cm"))
+```
+
+```{r}
+# Closeup plots of RTs in critical and post-critical regions
+rtCritRegions <- subset(dataPlots, 
+                               region %in% c("rcv","rcadv1"))
+
+rtCritRegions %>%
+  group_by(cond,region) %>%
+  dplyr::summarize(
+    mean.rt = mean(rt),
+    se.lower = mean.rt - se(rt),
+    se.upper = mean.rt + se(rt),
+    ci.lower = mean.rt - 2*se(rt),
+    ci.upper = mean.rt + 2*se(rt)) -> df_critReg
+
+df_critReg$Region <- ifelse(df_critReg$region 
+                            %in% c("rcv"), "Critical region", "Critical+1 region")
+df_critReg$Interference <- ifelse(df_critReg$cond 
+                                  %in% c("a","d"), "interference", "no-interference")
+df_critReg$Grammaticality <- ifelse(df_critReg$cond 
+                                    %in% c("a","b"), "grammatical", "ungrammatical")
+
+## Change the factor level order
+df_critReg$Region <- factor(df_critReg$Region,
+                            levels=c("Critical region", "Critical+1 region")) 
+df_critReg$Interference <- factor(df_critReg$Interference,
+                                  levels = c("no-interference","interference"))
+df_critReg$Grammaticality <- factor(df_critReg$Grammaticality,
+                                    levels = c("grammatical","ungrammatical"))
+
+pd <- position_dodge(.15)
+
+lplot_critReg<-ggplot(
+  data =df_critReg,
+  aes(x=Interference, y=mean.rt, group=Grammaticality, color=Grammaticality)) +
+  geom_errorbar(
+    aes(ymin=se.lower, ymax=se.upper),
+    width=.1,size=.4, position=pd) +
+  geom_line(linetype="solid", size=.4, position=pd) +
+  geom_point(aes(shape=Grammaticality, color=Grammaticality), 
+             size=2, show.legend = TRUE, position=pd) +
+  scale_color_manual(values = c("#0072B2","red3")) +
+  scale_shape_manual(values=c(16,17)) +
+  theme_bw(base_size = 12, base_family = "sans") +
+  labs(y = "[ms]")+
+  labs(shape="Condition",linetype="Condition",color="Condition") +
+  theme(axis.title.x = element_blank(),
+        legend.key.width = unit(1.3,"cm"),
+        legend.position="top") 
+
+lplot_critReg + facet_grid(. ~  Region) +
+  theme(strip.background = element_rect(fill="grey37"),
+        strip.text.x = element_text(size=12, face="bold", color="white")) -> lplot_critReg
+
+```
+
+```{r fig.height=7}
+ggarrange(p_byRegion,lplot_critReg, nrow = 2, labels = c("A", "B"), 
+          font.label = list(size=14, family ="sans"), align="h")
+                                              
+ggsave("spr1_byRegion.pdf", device = "pdf", width = 190, height = 190, units = "mm")
+```
+
+## Density plots
+```{r}
+# Posterior probability distributions of main effects and interaction in the critical region
+
+df1 <- posterior_samples(mrcv_int, pars= c("b") ) %>% 
+  mutate(gram_effect = exp(b_Intercept + b_gram) - exp(b_Intercept - b_gram),
+         numInt_effect = exp(b_Intercept + b_int) - exp(b_Intercept - b_int),
+         inter_effect = exp(b_Intercept + b_gramxint) - exp(b_Intercept - b_gramxint))
+
+color_scheme_set("gray")
+rcv_densityPlot<-mcmc_areas(
+ df1,
+  pars = c("inter_effect", "numInt_effect", "gram_effect"),
+  prob = 0.95,
+  prob_outer = 0.99, 
+  point_est = "mean") +
+  ggplot2::scale_y_discrete(
+    labels = c("interference ×\ngrammaticality", "interference", "grammaticality")) +
+  geom_vline(xintercept=0, linetype="dashed", color="red", size=.5) +
+  labs(title = "Main effects and interaction",
+       subtitle = "Critical region") +
+bayesplot::theme_default(base_family = getOption("bayesplot.base_family", "sans"),
+                         base_size = getOption("bayesplot.base_size", 12)) +
+  theme(plot.title = element_text(face="bold"))
+```
+
+```{r}
+# Posterior probability distributions of interference effects in the critical region for grammatical and ungrammatical sentences separately
+
+df2<-posterior_samples(mrcv_nested, pars= c("b") ) %>%
+  mutate(numEff_g = exp(b_Intercept + b_int_g) - exp(b_Intercept - b_int_g),
+         numEff_u = exp(b_Intercept + b_int_u) - exp(b_Intercept - b_int_u))
+ 
+color_scheme_set("gray")
+rcv_nestedPlot<-mcmc_areas(
+  df2,
+  pars = c("numEff_u", "numEff_g"),
+  prob = 0.95, # 80% intervals
+  prob_outer = 0.99, 
+  point_est = "mean") +
+  ggplot2::scale_y_discrete(labels = c("ungrammatical", "grammatical")) +
+  geom_vline(xintercept=0, linetype="dashed", color="red", size=.5) +
+  labs(title = "Nested comparisons",
+       subtitle = "Interference in critical region") +
+  bayesplot::theme_default(base_family = getOption("bayesplot.base_family", "sans"),
+                         base_size = getOption("bayesplot.base_size", 12)) +
+  theme(plot.title = element_text(face="bold"))
+```
+
+```{r}
+# Posterior probability distributions of main effects and interaction in the post-critical region
+
+df3<-posterior_samples(mrcadv1_int, pars= c("b") ) %>%
+  mutate(gram_effect = exp(b_Intercept + b_gram) - exp(b_Intercept - b_gram),
+         numInt_effect = exp(b_Intercept + b_int) - exp(b_Intercept - b_int),
+         inter_effect = exp(b_Intercept + b_gramxint) - exp(b_Intercept - b_gramxint))
+
+color_scheme_set("gray")
+rcadv1_densityPlot<-mcmc_areas(
+ df3,
+  pars = c("inter_effect", "numInt_effect", "gram_effect"),
+  prob = 0.95, # 80% intervals
+  prob_outer = 0.99, 
+  point_est = "mean") +
+  ggplot2::scale_y_discrete(labels = c("interference ×\ngrammaticality", "interference", "grammaticality")) +
+  geom_vline(xintercept=0, linetype="dashed", color="red", size=.5) +
+  labs(x = "Estimates [ms]", 
+       title = "Main effects and interaction",
+       subtitle = "Post-critical region") +
+  bayesplot::theme_default(base_family = getOption("bayesplot.base_family", "sans"),
+                         base_size = getOption("bayesplot.base_size", 12)) +
+
+  theme(plot.title = element_text(face="bold"))
+```
+
+```{r}
+# Posterior probability distributions of interference effects in the post-critical region for grammatical and ungrammatical sentences separately
+
+df4<-posterior_samples(mrcadv1_nested, pars= c("b") ) %>%
+  mutate(numEff_g = exp(b_Intercept + b_int_g) - exp(b_Intercept - b_int_g),
+         numEff_u = exp(b_Intercept + b_int_u) - exp(b_Intercept - b_int_u))
+ 
+color_scheme_set("gray")
+rcadv1_nestedPlot<-mcmc_areas(
+  df4,
+  pars = c("numEff_u", "numEff_g"),
+  prob = 0.95, # 80% intervals
+  prob_outer = 0.99, 
+  point_est = "mean") +
+  ggplot2::scale_y_discrete(labels = c("ungrammatical", "grammatical")) +
+  geom_vline(xintercept=0, linetype="dashed", color="red", size=.5) +
+  labs(x = "Estimates [ms]", 
+      title = "Nested comparisons",
+       subtitle = "Interference in post-critical region") +
+  bayesplot::theme_default(base_family = getOption("bayesplot.base_family", "sans"),
+                         base_size = getOption("bayesplot.base_size", 12)) +
+  theme(plot.title = element_text(face="bold"))
+
+```
+
+```{r fig.width=8, fig.height=8}
+spr1Density_trial <- ggarrange(rcv_densityPlot, 
+                               rcadv1_densityPlot + 
+                                    theme(axis.text.y = element_blank(),
+                                    axis.ticks.y = element_blank(),
+                                    axis.title.x = element_blank()),
+                               rcv_nestedPlot, 
+                               rcadv1_nestedPlot + 
+                                    theme(axis.text.y = element_blank(),
+                                    axis.ticks.y = element_blank(),
+                                    axis.title.x = element_blank()), 
+                               nrow =2, ncol = 2, align="hv",
+                               labels = c("A", "B", "C", "D"), 
+                               font.label = list(size=14, family ="sans"))
+
+
+annotate_figure(spr1Density_trial,
+              bottom = text_grob("Estimates [ms]", size = 12, family="sans"))
+
+ggsave("spr1Density.pdf", device = "pdf", width = 190, height = 190, units = "mm")
+```
